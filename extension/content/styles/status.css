@@ -1,0 +1,68 @@
+/* MasLingo — status colour and the connectivity dots.
+ *
+ * All of the panel's text — the sample sentence, loading states like
+ * "正在 OCR……", and errors — lives on ONE line (see .maslingo-line in
+ * window.css). This file owns the four status colours that mark it and the two
+ * connectivity dots above it, plus the one animation they share.
+ *
+ * The standalone corner popup and then the separate status row were both
+ * removed: every message now replaces the sample sentence on the line the user
+ * is already reading, and the collapsed widget mirrors it.
+ */
+
+/* Working breathes over 1.5–2.0s; the other kinds are steady colour, because a
+ * success that keeps pulsing reads as "still working".
+ *
+ * Lives here because both the message dot and the connectivity dots use it;
+ * the line's own dot colours are in window.css, where the line is styled. */
+@keyframes maslingo-breathe {
+  0%, 100% { opacity: 1; }
+  50% { opacity: .45; }
+}
+
+/* --- in-panel dots (the connectivity indicators) -------------------------- */
+/* Same four colours, same meaning, no animation beyond the working breathe. */
+.maslingo-dots {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding-bottom: 16px;
+}
+.maslingo-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  color: var(--maslingo-muted);
+  white-space: nowrap;
+}
+.maslingo-dot i {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--maslingo-dot-idle);
+  transition: background .2s ease;
+}
+.maslingo-dot[data-state="working"] i {
+  background: var(--maslingo-dot-working);
+  animation: maslingo-breathe 1.75s ease-in-out infinite;
+}
+.maslingo-dot[data-state="ok"] i { background: var(--maslingo-dot-ok); }
+.maslingo-dot[data-state="bad"] i { background: var(--maslingo-dot-bad); }
+.maslingo-dot[data-state="ok"] .maslingo-dot-text,
+.maslingo-dot[data-state="bad"] .maslingo-dot-text { color: var(--maslingo-ink); }
+
+/* Focus forwards to the track, because the input itself is 0x0 and invisible. */
+.maslingo-switch input:focus-visible + .maslingo-switch-track {
+  outline: 2px solid rgba(28, 30, 33, .55);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* The messages still appear and still change colour — those carry
+     information — but nothing loops. */
+  .maslingo-line-dot,
+  .maslingo-dot i { animation: none !important; }
+}

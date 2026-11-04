@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MasLingo Desktop</title>
+  <link rel="stylesheet" href="../extension/ui/system.css">
+  <link rel="stylesheet" href="shell.css">
+  <script defer src="client.js"></script>
+  <script defer src="trusted.js"></script>
+  <script defer src="../extension/translation/providers.js"></script>
+  <script defer src="shell.js"></script>
+</head>
+<body>
+  <header class="app-header">
+    <div class="brand"><span class="mark" aria-hidden="true">译</span><strong>MasLingo</strong></div>
+    <nav aria-label="应用工具">
+      <button type="button" data-tool="browser">浏览器伴侣</button>
+      <button type="button" data-tool="document">文档翻译</button>
+      <button type="button" data-tool="options">设置</button>
+    </nav>
+  </header>
+  <main class="workspace">
+    <h1>翻译工作台</h1>
+    <p class="intro">输入文字，或框选屏幕上任何应用里的内容。</p>
+    <div class="actions">
+      <button id="capture" type="button">框选屏幕 <kbd>Ctrl Alt S</kbd></button>
+      <button id="clipboard" type="button">翻译剪贴板 <kbd>Ctrl Alt T</kbd></button>
+      <button id="image" type="button">打开图片</button>
+      <label class="ocr-language">识别语言 <select id="ocr-language"><option value="auto">Windows 默认</option></select></label>
+    </div>
+    <form id="translation-form">
+      <div class="panels">
+        <section aria-labelledby="source-label">
+          <div class="panel-header"><label id="source-label" for="source">原文</label><button id="clear" type="button" class="link">清空</button></div>
+          <textarea id="source" maxlength="10000" spellcheck="false" placeholder="输入或粘贴要翻译的文字"></textarea>
+        </section>
+        <section aria-labelledby="output-label">
+          <div class="panel-header"><label id="output-label" for="output">译文</label><button id="copy" type="button" class="link" disabled>复制</button></div>
+          <textarea id="output" readonly placeholder="译文将在这里显示"></textarea>
+        </section>
+      </div>
+      <footer>
+        <button id="translate" type="submit" class="primary" disabled>翻译</button>
+        <span id="provider" class="hint"></span>
+        <p id="status" role="status"></p>
+      </footer>
+    </form>
+    <p id="shortcut-hint" class="hint">全局快捷键在 MasLingo 运行时可用。</p>
+  </main>
+</body>
+</html>

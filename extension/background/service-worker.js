@@ -1,0 +1,1227 @@
+importScripts("../config.js", "../translation/providers.js");
+importScripts("speech.js", "reader.js");
+
+const IMAGE_MENU_ID = "maslingo-translate-image";
+let imageMenuReady = null;
+
+function ensureImageMenu() {
+  if (!chrome.contextMenus) return Promise.resolve();
+  if (imageMenuReady) return imageMenuReady;
+  imageMenuReady = (async () => {
+    const properties = {
+      title: "MasLingo：翻译这张图片", contexts: ["image"],
+      documentUrlPatterns: ["http://*/*", "https://*/*", "file:///*"],
+    };
+    try {
+      await chrome.contextMenus.update(IMAGE_MENU_ID, properties);
+    } catch {
+      await new Promise((resolve, reject) => {
+        chrome.contextMenus.create({ id: IMAGE_MENU_ID, ...properties }, () => {
+          const error = chrome.runtime.lastError;
+          if (error) reject(new Error(error.message));
+          else resolve();
+        });
+      });
+    }
+  })().catch(error => { imageMenuReady = null; throw error; });
+  return imageMenuReady;
+}
+
+async function sendImageStatus(tabId, text, kind = "info") {
+  const message = String(text || "").slice(0, 200);
+  try {
+    await chrome.tabs.sendMessage(tabId, { type: "IMAGE_TRANSLATION_STATUS", text: message, kind }, { frameId: 0 });
+  } catch {
+    // A pre-existing tab may not have a panel yet. Still give the user feedback.
+    await chrome.scripting.executeScript({
+      target: { tabId, frameIds: [0] }, args: [message],
+      func: text => {
+        document.getElementById("maslingo-image-status")?.remove();
+        const node = document.createElement("div");
+        node.id = "maslingo-image-status";
+        node.textContent = text;
+        node.setAttribute("role", "status");
+        Object.assign(node.style, { position: "fixed", right: "20px", bottom: "20px", zIndex: "2147483647",
+          maxWidth: "340px", padding: "12px 16px", borderRadius: "12px", background: "#fff", color: "#1c1e21",
+          border: "1px solid #ddd", boxShadow: "0 4px 18px #0002", font: "14px/1.5 system-ui" });
+        document.documentElement.append(node);
+        setTimeout(() => node.remove(), 8000);
+      },
+    }).catch(() => {});
+  }
+}
+
+async function handleImageMenuClick(info, tab) {
+  if (info?.menuItemId !== IMAGE_MENU_ID || !tab?.id) return { ok: false, error: "图片菜单无效" };
+  const frameId = Number.isInteger(info.frameId) ? info.frameId : 0;
+  const target = { tabId: tab.id, frameIds: [frameId] };
+  const message = { type: "TRANSLATE_CONTEXT_IMAGE", srcUrl: info.srcUrl };
+  try {
+    let result;
+    try {
+      result = await chrome.tabs.sendMessage(tab.id, message, { frameId });
+    } catch {
+      const [probe] = await chrome.scripting.executeScript({ target, func: () => Boolean(globalThis.__MAS_LOADED__) });
+      if (probe?.result) throw new Error("扩展已更新，请刷新网页后重新右键图片");
+      const scripts = chrome.runtime.getManifest().content_scripts[0];
+      await chrome.scripting.insertCSS({ target, files: scripts.css });
+      await chrome.scripting.executeScript({ target, files: scripts.js });
+      result = await chrome.tabs.sendMessage(tab.id, message, { frameId });
+    }
+    if (!result?.ok) throw new Error(result?.error || "无法定位所选图片，请刷新网页后重新右键");
+    return result;
+  } catch (error) {
+    const reason = String(error?.message || error).slice(0, 180);
+    await sendImageStatus(tab.id, `图片翻译无法启动：${reason}`, "error");
+    return { ok: false, error: reason };
+  }
+}
+
+if (chrome.contextMenus) {
+  const register = () => ensureImageMenu().catch(error => console.warn("图片菜单初始化失败：", error.message));
+  chrome.runtime.onInstalled?.addListener(register);
+  chrome.runtime.onStartup?.addListener(register);
+  chrome.contextMenus.onClicked.addListener((info, tab) => {
+    if (info.menuItemId === IMAGE_MENU_ID) handleImageMenuClick(info, tab);
+  });
+  register();
+}
+
+/**
+ * Put a deadline on a fetch.
+ *
+ * Nothing in the extension had one. A half-open connection, or a backend still
+ * downloading the OCR model on its first run, parked the auto-translate queue
+ * forever at concurrency 1: the status line sat on "正在 OCR……", the detection
+ * boxes never resolved, and no error was ever reported — the user just waited.
+ *
+ * A timeout is reported as such so it can be told apart from a refusal.
+ */
+const REQUEST_TIMEOUT_MS = 120000;
+/**
+ * Deadline for page-level OCR.
+ *
+ * `/api/recognize-page` reads up to 24 regions one after another, and on a
+ * small shared VM that legitimately takes minutes — the README says so, the
+ * content script waits six minutes for the answer, and CI allows curl ten.
+ * With the ordinary 120s deadline the extension was the one giving up on work
+ * the backend would have finished, and reported it as a timeout.
+ */
+const PAGE_REQUEST_TIMEOUT_MS = 300000;
+
+/**
+ * Fetch with a deadline, reporting a timeout as such.
+ *
+ * A caller that already supplied its own signal keeps it.
+ */
+async function timedFetch(url, init = {}, ms = REQUEST_TIMEOUT_MS) {
+  if (init.signal) return fetch(url, init);
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), ms);
+  try {
+    return await fetch(url, { ...init, signal: controller.signal });
+  } catch (error) {
+    if (error?.name === "AbortError") {
+      throw new Error(`请求超时（${Math.round(ms / 1000)} 秒）`);
+    }
+    throw error;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
+ * Read an error message out of a failed response without assuming JSON.
+ *
+ * The old shape was `const payload = await response.json(); if (!ok) throw
+ * payload.detail`, which parses before it checks. A captive portal or a wrong
+ * backendUrl answering 200 with HTML therefore surfaced as "Unexpected token '<'
+ * … is not valid JSON" — a message that describes the parser, not the problem.
+ */
+async function readError(response, fallback) {
+  let detail = "";
+  try {
+    const text = await response.text();
+    try {
+      const parsed = JSON.parse(text);
+      detail = parsed?.detail || parsed?.error?.message || parsed?.message || "";
+    } catch {
+      // Not JSON. If it looks like a page, say so rather than quoting markup.
+      detail = /^\s*</.test(text) ? "返回的不是 JSON，可能是地址填错或网络被劫持" : text.slice(0, 120);
+    }
+  } catch {
+    /* body already consumed or unreadable */
+  }
+  return detail ? `${fallback}：${detail}` : `${fallback}（HTTP ${response.status}）`;
+}
+
+async function fetchBackend(path,options={},timeoutMs=REQUEST_TIMEOUT_MS){
+  const backends=await globalThis.MAS_backendCandidates();
+  let lastError=null;
+  for(const base of backends){
+    try{
+      const resp=await timedFetch(`${base}${path}`,options,timeoutMs);
+      if(resp.ok || resp.status >= 400){
+        return resp;
+      }
+      lastError=new Error(`${base} 响应失败: ${resp.status}`);
+    }catch(e){
+      lastError=new Error(`${base}: ${e.message}`);
+    }
+  }
+  throw new Error(`后端连接失败（${lastError?.message||"未配置后端且本机后端未运行"}）`);
+}
+
+// --- auto-translate channel ------------------------------------------------
+//
+// Auto mode works from the image bytes the content script fetches, not from a
+// screenshot: a screenshot only ever contains the viewport, which is exactly
+// what breaks down on a long scrolling page, and it fails outright while the tab
+// is in the background. Sending the picture itself means detection is
+// independent of scroll position and of which tab is focused.
+async function autoRecognize(imageDataUrl) {
+  const blob = await (await fetch(imageDataUrl)).blob();
+  const form = new FormData();
+  form.append("image", blob, "region.png");
+  const response = await fetchBackend(
+    "/api/recognize-page",
+    { method: "POST", body: form },
+    PAGE_REQUEST_TIMEOUT_MS,
+  );
+  // Status first, body second — see readError.
+  if (!response.ok) throw new Error(await readError(response, "OCR 失败"));
+  const payload = await response.json().catch(() => ({}));
+  return payload.items || [];
+}
+
+/**
+ * Fetch an image on the content script's behalf.
+ *
+ * A content script's fetch is subject to the page's origin rules — since MV3 it
+ * cannot use the extension's host permissions to reach cross-origin bytes. That
+ * is why auto translate reported "图片读取失败 403" on a manga CDN that answers
+ * 200 to everyone else. The service worker can make the request properly.
+ *
+ * The referrer is set to the page the picture belongs to because a hotlink
+ * check is usually just "did this request come from one of our own pages", and
+ * an extension's request otherwise arrives with none. Where the server instead
+ * refuses by origin or by fingerprint, nothing here can help and the screenshot
+ * route takes over.
+ */
+async function fetchImageBytes(url, pageUrl) {
+  const options = { credentials: "omit", cache: "force-cache" };
+  if (pageUrl && /^https?:/.test(pageUrl)) {
+    options.referrer = pageUrl;
+    options.referrerPolicy = "no-referrer-when-downgrade";
+  }
+  const response = await timedFetch(url, options);
+  if (!response.ok) throw new Error(`图片读取失败 ${response.status}`);
+  const buffer = new Uint8Array(await response.arrayBuffer());
+  let binary = "";
+  const chunk = 0x8000;
+  for (let offset = 0; offset < buffer.length; offset += chunk) {
+    binary += String.fromCharCode(...buffer.subarray(offset, offset + chunk));
+  }
+  const mime = response.headers.get("content-type") || "image/png";
+  return `data:${mime};base64,${btoa(binary)}`;
+}
+
+/**
+ * Crop an element's pixels out of a screenshot of the visible tab.
+ *
+ * The fallback for pictures that cannot be fetched at all — a CDN that refuses
+ * the extension outright. A screenshot is always readable because it never
+ * touches the page's own image loading, and it is what manual mode has always
+ * used. It only covers the viewport, so the caller must confirm the element is
+ * fully on screen before relying on it.
+ */
+async function captureElementCrop(tabId, message) {
+  if (!tabId) throw new Error("拿不到标签页");
+  const { bmp } = await captureVisibleImage(tabId);
+  // Read the nested field: the message carries `viewport` alongside `rect`, and
+  // reading `viewport.width` off the message itself yields undefined, which
+  // turns every derived number into NaN and OffscreenCanvas rejects it.
+  const viewport = message.viewport || {};
+  if (!viewport.width || !viewport.height) throw new Error("缺少视口尺寸");
+  const scaleX = bmp.width / viewport.width;
+  const scaleY = bmp.height / viewport.height;
+  const rect = message.rect;
+  const left = Math.max(0, Math.floor(rect.left * scaleX));
+  const top = Math.max(0, Math.floor(rect.top * scaleY));
+  const right = Math.min(bmp.width, Math.ceil((rect.left + rect.width) * scaleX));
+  const bottom = Math.min(bmp.height, Math.ceil((rect.top + rect.height) * scaleY));
+  const width = right - left;
+  const height = bottom - top;
+  if (width < 16 || height < 16) throw new Error("元素不在可视区域内");
+
+  const canvas = new OffscreenCanvas(width, height);
+  canvas.getContext("2d").drawImage(bmp, left, top, width, height, 0, 0, width, height);
+  const blob = await canvas.convertToBlob({ type: "image/png" });
+  return blobToDataUrl(blob);
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === "IMAGE_TRANSLATION_STATUS") {
+    if (!sender?.tab?.id || sender.frameId === 0) return undefined;
+    sendImageStatus(sender.tab.id, message.text, ["error", "ok"].includes(message.kind) ? message.kind : "info")
+      .then(() => sendResponse({ ok: true }));
+    return true;
+  }
+  if (message?.type === "START_SELECT") {
+    // Relayed, not handled. The in-page panel cannot reach content scripts:
+    // chrome.runtime.sendMessage only travels between extension contexts, so its
+    // 框选翻译 button used to arrive here and stop. Only tabs.sendMessage reaches
+    // a content script, and only the worker knows the tab id.
+    //
+    // frameId 0 because selection is the top frame's job — a subframe's
+    // coordinates do not correspond to the tab-level screenshot the worker crops.
+    const tabId = sender?.tab?.id;
+    if (tabId === undefined) {
+      sendResponse({ ok: false, error: "拿不到标签页" });
+      return true;
+    }
+    chrome.tabs.sendMessage(tabId, { type: "START_SELECT" }, { frameId: 0 })
+      .then(() => sendResponse({ ok: true }))
+      .catch((error) => sendResponse({ ok: false, error: error.message }));
+    return true;
+  }
+  if (message?.type === "CHECK_BACKEND") {
+    // Run here rather than in the panel. A content script's fetch is bound by
+    // the page's origin, so a backend on any other host — including the user's
+    // own machine on a different port — is unreachable from there, and the
+    // check would report "not running" for a backend that is running fine.
+    (async () => {
+      let bases = [];
+      try {
+        bases = await globalThis.MAS_backendCandidates();
+      } catch {
+        bases = [];
+      }
+      for (const base of bases) {
+        try {
+          const response = await timedFetch(`${base}/health`, { cache: "no-store" }, 8000);
+          if (!response.ok) continue;
+          const payload = await response.json();
+          if (payload?.ok) {
+            sendResponse({ ok: true, base });
+            return;
+          }
+        } catch {
+          /* try the next candidate */
+        }
+      }
+      sendResponse({ ok: false });
+    })();
+    return true;
+  }
+  if (message?.type === "TEST_PROVIDER") {
+    // Same reason: the request has to leave from the extension, not the page.
+    (async () => {
+      try {
+        const cfg = message.cfg || {};
+        const provider = globalThis.MAS_providers.byId(cfg.translationProvider);
+        if (!provider || provider.id === "none" || !provider.adapter) {
+          sendResponse({ ok: false, reason: "尚未选择翻译来源" });
+          return;
+        }
+        // Awaited: some adapters are async (有道's signature is a SHA-256, and
+        // 必应 fetches its page tokens first), so calling one synchronously
+        // yielded a Promise and `fetch(undefined, …)` rejected — the
+        // connectivity check reported a failure for a perfectly good key.
+        // runTranslation always awaited it, which is why only this path broke.
+        const built = await provider.adapter({
+          endpoint: cfg.translationEndpoint || provider.endpoint || "",
+          apiKey: cfg.translationApiKey || "",
+          appId: cfg.translationAppId || "",
+          model: globalThis.MAS_providers.resolveModel(provider, cfg),
+          // The probe used to pass only `texts`, and the one-text-per-request
+          // adapters read `request.text` — Bing's form then carried the literal
+          // string "undefined" and the check showed Bing's translation of that
+          // word (未定义) as if it were a success.
+          text: message.text,
+          target: globalThis.MAS_providers.resolveTarget(provider, cfg),
+          source: provider.source || "ja",
+          texts: [message.text],
+          strength: globalThis.MAS_providers.normalizeStrength(cfg.translationStrength),
+          providerId: provider.id,
+          glossary: cfg.translationGlossary || "general",
+          // Baidu signs with a random salt and a timestamp; without them the
+          // signature is built over the literal string "undefined" and the
+          // probe can never pass.
+          salt: String(Date.now()),
+          now: Date.now(),
+        });
+        let response;
+        try {
+          response = await timedFetch(built.url, built.init, 30000);
+        } catch (error) {
+          // Same wording as the real translation path. A bare "Failed to
+          // fetch" names neither the service nor a cause, and this probe is
+          // exactly where the user comes to find out what is wrong.
+          sendResponse({
+            ok: false,
+            reason: describeConnectFailure(error, built.url, provider).slice(0, 200),
+          });
+          return;
+        }
+        const payload = await response.json().catch(() => null);
+        if (!response.ok) {
+          sendResponse({
+            ok: false,
+            httpStatus: response.status,
+            detail: String(
+              payload?.error?.message || payload?.message || payload?.detail || "",
+            ).slice(0, 120),
+          });
+          return;
+        }
+        const parsed = await provider.parse(payload, 1);
+        sendResponse({ ok: true, translated: String(parsed?.[0] ?? "").trim() });
+      } catch (error) {
+        sendResponse({ ok: false, reason: String(error?.message || error).slice(0, 120) });
+      }
+    })();
+    return true;
+  }
+  if (message?.type === "OPEN_OPTIONS") {
+    // The panel's settings link: a content script cannot open an options page
+    // itself, so it asks the service worker to.
+    chrome.runtime.openOptionsPage();
+    sendResponse({ ok: true });
+    return true;
+  }
+  if (message?.type === "TRANSLATE_TEXT_BLOCKS") {
+    // Webpage paragraphs. Same provider settings as the manga flow; the
+    // caller may carry a per-box language chosen in its title menu, which is
+    // mapped to whatever dialect that provider expects.
+    (async () => {
+      try {
+        const cfg = await chrome.storage.local.get([
+          "translationMode", "translationProvider", "translationEndpoint",
+          "translationModel", "translationModelProvider", "translationApiKey",
+          "translationAppId", "targetLanguage", "translationStrength",
+          "translationGlossary",
+        ]);
+        await applyQuickProvider(cfg, message.provider);
+        const provider = resolveProvider(cfg);
+        if (!provider) {
+          sendResponse({ ok: false, reason: "尚未选择翻译来源" });
+          return;
+        }
+        if (provider.chat && globalThis.MAS_providers.glossaries.some(glossary => glossary.id === message.glossary)) {
+          cfg.translationGlossary = message.glossary;
+        }
+        const texts = (message.texts || [])
+          .map((text) => String(text ?? ""))
+          .filter((text) => text.trim());
+        if (!texts.length) {
+          sendResponse({ ok: true, translations: [], skipped: [] });
+          return;
+        }
+        const sourceName = message.source || globalThis.MAS_providers.autoSource || "自动识别";
+        const targetName = message.target || cfg.targetLanguage || "简体中文";
+        const language = globalThis.MAS_providers.languageByName(sourceName);
+        const overrides = {
+          source: globalThis.MAS_providers.sourceForLanguage(provider, sourceName),
+          sourceName: sourceName === (globalThis.MAS_providers.autoSource || "自动识别")
+            ? "自动识别"
+            : (language?.zh || sourceName),
+          target: globalThis.MAS_providers.targetForLanguage(provider, targetName),
+          sourceLocked: Boolean(globalThis.MAS_providers.languageBase(sourceName)),
+          translateMixed: message.translateMixed === true,
+        };
+        const { translations, skipped } = await runTranslationDetailed(texts, cfg, overrides);
+        sendResponse({ ok: true, translations, skipped });
+      } catch (error) {
+        sendResponse({ ok: false, reason: String(error?.message || error) });
+      }
+    })();
+    return true;
+  }
+  if (message?.type === "LOOKUP_WORD") {
+    // Selection translation. A short word asks the chat model for a dictionary
+    // entry in the style of the standard dictionaries; an AI phrase lookup
+    // takes the ordinary translation path. Non-AI sources are rejected.
+    (async () => {
+      try {
+        sendResponse(await lookupSelection(
+          message.text,
+          message.context,
+          message.word === true,
+          {source:message.source,target:message.target,provider:message.provider},
+        ));
+      } catch (error) {
+        sendResponse({ ok: false, reason: String(error?.message || error) });
+      }
+    })();
+    return true;
+  }
+  if (message?.type === "CAPTURE_CROP") {
+    if (sender?.frameId !== 0) {
+      sendResponse({ ok: false, error: "iframe 内无法使用截图回退，请在最外层页面框选。" });
+      return true;
+    }
+    // The tab is taken from the sender rather than the message: a content
+    // script has no way to know its own tab id, and the first version of this
+    // passed undefined straight into tabs.get().
+    captureElementCrop(sender?.tab?.id, message).then(
+      (dataUrl) => sendResponse({ ok: true, dataUrl }),
+      (error) => sendResponse({ ok: false, error: error.message }),
+    );
+    return true;
+  }
+  if (message?.type === "FETCH_IMAGE") {
+    fetchImageBytes(message.url, message.pageUrl).then(
+      (dataUrl) => sendResponse({ ok: true, dataUrl }),
+      (error) => sendResponse({ ok: false, error: error.message }),
+    );
+    return true;
+  }
+  if (message?.type === "AUTO_OCR") {
+    autoRecognize(message.image).then(
+      (items) => sendResponse({ ok: true, items }),
+      (error) => sendResponse({ ok: false, error: error.message }),
+    );
+    return true;
+  }
+  if (message?.type === "AUTO_TRANSLATE") {
+    (async () => {
+      try {
+        const cfg = await chrome.storage.local.get([
+          "translationMode", "translationProvider", "translationEndpoint",
+          "translationModel", "translationModelProvider", "translationApiKey",
+          "translationAppId", "targetLanguage", "translationStrength",
+          "translationGlossary",
+        ]);
+        const provider = resolveProvider(cfg);
+        if (!provider) {
+          sendResponse({ ok: true, mode: "none", items: [] });
+          return;
+        }
+        const { translations: translated, skipped } =
+          await runTranslationDetailed(message.texts || [], cfg, { sourceLocked: true });
+        sendResponse({
+          ok: true,
+          mode: effectiveMode(provider),
+          items: (message.texts || []).map((text, index) => ({
+            text,
+            translated: translated[index],
+            skipped: Boolean(skipped[index]),
+          })),
+        });
+      } catch (error) {
+        sendResponse({ ok: false, error: error.message });
+      }
+    })();
+    return true;
+  }
+  if (message?.type !== "TEST_TRANSLATION") return undefined;
+  (async () => {
+    try {
+      const cfg = await chrome.storage.local.get([
+        "translationMode", "translationProvider", "translationEndpoint",
+        "translationModel", "translationApiKey", "translationAppId", "targetLanguage",
+        "translationStrength", "translationModelProvider", "translationGlossary",
+      ]);
+      const registry = globalThis.MAS_providers;
+      const provider = resolveProvider(cfg);
+      const issue = registry.configurationIssue(provider, registry.providerSettings(cfg, provider?.id));
+      if (issue) throw new Error(issue);
+      const japanese = registry.languageBase(registry.resolveTarget(provider, cfg)) === "ja";
+      const source = japanese ? "English" : "日本語";
+      const text = japanese ? "Good morning." : "おはよう";
+      const translated = await runTranslation([text], cfg, {
+        source: registry.sourceForLanguage(provider, source), sourceName: source, sourceLocked: true,
+      });
+      sendResponse({ ok: true, text, translated: translated[0] });
+    } catch (error) {
+      sendResponse({ ok: false, error: error.message });
+    }
+  })();
+  return true; // reply is asynchronous
+});
+
+chrome.runtime.onConnect.addListener(port=>{
+  if(port.name!=="manga-recognition")return;
+  const tabId=port.sender?.tab?.id;
+  if(!tabId){port.disconnect();return;}
+  port.onMessage.addListener(msg=>{
+    if(msg.type==="RECOGNIZE_REGION") recognizeRegion(msg,tabId,port);
+    else if(msg.type==="RECOGNIZE_PAGE") recognizePage(msg,tabId,port);
+    else if(msg.type==="TRANSLATE_TEXTS") translateTexts(msg,port);
+    else if(msg.type==="KEEPALIVE") postPortMessage(port,{type:"KEEPALIVE_ACK"});
+  });
+});
+
+function postPortMessage(port,message){
+  try{
+    port.postMessage(message);
+    return true;
+  }catch(error){
+    console.warn("识别消息通道已关闭：",error.message);
+    return false;
+  }
+}
+
+function postResult(port,tabId,message){
+  if(postPortMessage(port,message))return;
+  chrome.tabs.sendMessage(tabId,message).catch(error=>{
+    console.warn("无法将识别结果发送回页面：",error.message);
+  });
+}
+
+async function recognizeRegion(msg,tabId,port){
+  try{
+    const cfg=await chrome.storage.local.get(["debugMode"]);
+    const {tab,bmp}=await captureVisibleImage(tabId);
+    postPortMessage(port,{type:"CAPTURE_READY",requestId:msg.requestId});
+    const r=msg.rect;
+    const viewport=msg.viewport||{width:tab.width,height:tab.height};
+    if(!viewport.width||!viewport.height) throw new Error("无法获取页面视口尺寸");
+    const scaleX=bmp.width/viewport.width;
+    const scaleY=bmp.height/viewport.height;
+    const sx=Math.max(0,Math.min(bmp.width-1,Math.floor(r.left*scaleX)));
+    const sy=Math.max(0,Math.min(bmp.height-1,Math.floor(r.top*scaleY)));
+    const ex=Math.max(sx+1,Math.min(bmp.width,Math.ceil((r.left+r.width)*scaleX)));
+    const ey=Math.max(sy+1,Math.min(bmp.height,Math.ceil((r.top+r.height)*scaleY)));
+    const cropWidth=ex-sx;
+    const cropHeight=ey-sy;
+    const canvas=new OffscreenCanvas(cropWidth,cropHeight);
+    const ctx=canvas.getContext("2d");
+    ctx.drawImage(bmp,sx,sy,cropWidth,cropHeight,0,0,cropWidth,cropHeight);
+    const cropped=await canvas.convertToBlob({type:"image/png"});
+    const fd=new FormData();
+    fd.append("image",cropped,"manga.png");
+
+    const resp=await fetchBackend("/api/recognize-image",{
+      method:"POST",body:fd
+    });
+    if(!resp.ok) throw new Error(await readError(resp,"后端错误"));
+    const json=await resp.json().catch(()=>({}));
+    json.debug_mode=cfg.debugMode!==false;
+    const patch = await describeRegion(bmp,r,viewport);
+    const recognizedText = (json.items||[])
+      .map(item=>item.text?.trim())
+      .filter(Boolean)
+      .join("\n");
+    json.items = recognizedText ? [{text:recognizedText,patch,direction:json.direction}] : [];
+    postResult(port,tabId,{
+      type:"RECOGNITION_RESULT",
+      rect:r,
+      requestId:msg.requestId,
+      result:json
+    });
+  }catch(error){
+    postResult(port,tabId,{
+      type:"RECOGNITION_RESULT",
+      rect:msg.rect,
+      requestId:msg.requestId,
+      result:{ok:false,error:error.message}
+    });
+  }
+}
+
+async function captureVisibleImage(tabId){
+  const tab=await chrome.tabs.get(tabId);
+  if(!tab.active) throw new Error("请切回发起识别的标签页后重试，后台标签页无法截图。");
+  const data=await chrome.tabs.captureVisibleTab(tab.windowId,{format:"png"});
+  const [active]=await chrome.tabs.query({active:true,windowId:tab.windowId});
+  if(active?.id!==tabId || active.url!==tab.url){
+    throw new Error("截图期间标签页已切换或导航，请回到原页面重试。");
+  }
+  const bytes=Uint8Array.from(atob(data.slice(data.indexOf(",")+1)),char=>char.charCodeAt(0));
+  const bmp=await createImageBitmap(new Blob([bytes],{type:"image/png"}));
+  return {tab,bmp};
+}
+
+async function blobToDataUrl(blob){
+  const bytes=new Uint8Array(await blob.arrayBuffer());
+  let binary="";
+  const chunkSize=0x8000;
+  for(let offset=0;offset<bytes.length;offset+=chunkSize){
+    binary+=String.fromCharCode(...bytes.subarray(offset,offset+chunkSize));
+  }
+  return `data:${blob.type};base64,${btoa(binary)}`;
+}
+
+/**
+ * Describe where a detected box sits inside the screenshot, in CSS pixels,
+ * together with a padded crop of the pixels around it.
+ *
+ * The pixels are what lets the content script erase the original lettering
+ * without painting a white rectangle over the artwork: it fills only the glyph
+ * pixels with the local paper colour, so a bubble's outline and the drawing
+ * outside it stay untouched. Geometry alone cannot do that — a box is not a
+ * balloon.
+ */
+async function describeRegion(bmp,rect,viewport){
+  const scaleX=bmp.width/viewport.width;
+  const scaleY=bmp.height/viewport.height;
+  const padX=Math.min(32,Math.max(8,rect.width*0.14));
+  const padY=Math.min(32,Math.max(8,rect.height*0.14));
+  const left=Math.max(0,Math.floor((rect.left-padX)*scaleX));
+  const top=Math.max(0,Math.floor((rect.top-padY)*scaleY));
+  const right=Math.min(bmp.width,Math.ceil((rect.left+rect.width+padX)*scaleX));
+  const bottom=Math.min(bmp.height,Math.ceil((rect.top+rect.height+padY)*scaleY));
+  const width=Math.max(1,right-left);
+  const height=Math.max(1,bottom-top);
+  const canvas=new OffscreenCanvas(width,height);
+  canvas.getContext("2d").drawImage(bmp,left,top,width,height,0,0,width,height);
+  const image=await blobToDataUrl(await canvas.convertToBlob({type:"image/png"}));
+  return {
+    image,
+    rect:{
+      left:left/scaleX,
+      top:top/scaleY,
+      width:width/scaleX,
+      height:height/scaleY
+    },
+    core:{
+      left:(rect.left*scaleX-left)/width,
+      top:(rect.top*scaleY-top)/height,
+      width:rect.width*scaleX/width,
+      height:rect.height*scaleY/height
+    }
+  };
+}
+
+async function recognizePage(msg,tabId,port){
+  try{
+    const {tab,bmp}=await captureVisibleImage(tabId);
+    const viewport=msg.viewport||{width:tab.width,height:tab.height};
+    const scaleX=bmp.width/viewport.width;
+    const scaleY=bmp.height/viewport.height;
+    const media=msg.mediaRect;
+    // Only a lower bound: an image filling the viewport is the normal case for
+    // a manga reader, and the old 80% cap rejected it outright.
+    const useMedia=media &&
+      media.width*media.height >= viewport.width*viewport.height*0.08 &&
+      media.width>=180 && media.height>=180;
+    if(!useMedia)throw new Error("未能定位主漫画图片。请改用“选择漫画区域并识别”，或在图片更大的页面上重试。");
+    postPortMessage(port,{type:"CAPTURE_READY",requestId:msg.requestId});
+    const crop={
+      left:Math.max(0,Math.floor(media.left*scaleX)),
+      top:Math.max(0,Math.floor(media.top*scaleY)),
+      right:Math.min(bmp.width,Math.ceil((media.left+media.width)*scaleX)),
+      bottom:Math.min(bmp.height,Math.ceil((media.top+media.height)*scaleY))
+    };
+    const cropWidth=Math.max(1,crop.right-crop.left);
+    const cropHeight=Math.max(1,crop.bottom-crop.top);
+    // Upscale only when the crop is genuinely small.
+    //
+    // Blowing every crop up to 1600px was measured to *lose* text: a 1.45x
+    // bilinear stretch dilutes a one-pixel white-on-black stroke below the
+    // detector's fixed ">235 means light ink" mask, so lettering painted
+    // straight onto the artwork disappears. Sweeping display widths 400-900 on
+    // a real page (tools/probe_pipeline.py), always-upscaling recovered 25 of
+    // 35 known text areas, never-upscaling 23, and "only below 1100px" 28 —
+    // with the white-on-black case found at every width instead of vanishing
+    // on the large ones.
+    const UPSCALE_BELOW=1100;
+    const cropLongest=Math.max(cropWidth,cropHeight);
+    const upscale=cropLongest>=UPSCALE_BELOW?1:Math.max(1,Math.min(3,1600/cropLongest));
+    const outputWidth=Math.max(1,Math.round(cropWidth*upscale));
+    const outputHeight=Math.max(1,Math.round(cropHeight*upscale));
+    const canvas=new OffscreenCanvas(outputWidth,outputHeight);
+    canvas.getContext("2d").drawImage(
+      bmp,crop.left,crop.top,cropWidth,cropHeight,0,0,outputWidth,outputHeight
+    );
+    const image=await canvas.convertToBlob({type:"image/png"});
+    const fd=new FormData();
+    fd.append("image",image,"manga-image.png");
+    const cfg=await chrome.storage.local.get(["debugMode"]);
+    const resp=await fetchBackend(
+      "/api/recognize-page",
+      {method:"POST",body:fd},
+      PAGE_REQUEST_TIMEOUT_MS
+    );
+    if(!resp.ok)throw new Error(await readError(resp,"后端错误"));
+    const result=await resp.json().catch(()=>({}));
+    // Same field the manual path sets: without it the content script cannot
+    // tell "show the recognised Japanese" from "the setting is off" and painted
+    // the source text even when the user had switched it off.
+    result.debug_mode=cfg.debugMode!==false;
+    result.items=(result.items||[]).map(item=>({
+      ...item,
+      rect:{
+        left:(item.bbox.left/upscale+crop.left)*viewport.width/bmp.width,
+        top:(item.bbox.top/upscale+crop.top)*viewport.height/bmp.height,
+        width:(item.bbox.right-item.bbox.left)/upscale*viewport.width/bmp.width,
+        height:(item.bbox.bottom-item.bbox.top)/upscale*viewport.height/bmp.height
+      }
+    }));
+    result.items=await Promise.all(result.items.map(async item=>({
+      ...item,
+      patch:await describeRegion(bmp,item.rect,viewport)
+    })));
+    postResult(port,tabId,{
+      type:"RECOGNITION_RESULT",rect:{left:0,top:0,width:viewport.width,height:viewport.height},
+      requestId:msg.requestId,result
+    });
+  }catch(error){
+    postResult(port,tabId,{
+      type:"RECOGNITION_RESULT",rect:{left:0,top:0,width:msg.viewport?.width||1,height:msg.viewport?.height||1},
+      requestId:msg.requestId,result:{ok:false,error:error.message}
+    });
+  }
+}
+
+// Map the pre-provider settings onto the registry so an existing install keeps
+// working: `translationMode` used to be the only choice the user had.
+function resolveProvider(cfg) {
+  const registry = globalThis.MAS_providers;
+  // "none" is a real entry so the settings dropdown can offer it, but it has no
+  // adapter and must resolve to "translation is off".
+  const provider = registry.byId(registry.resolveProviderId(cfg));
+  return provider?.adapter ? provider : null;
+}
+
+/**
+ * The mode a resolved provider effectively runs in, for status reporting.
+ *
+ * Only "none" is load-bearing: the content script uses it to decide whether the
+ * text it received is OCR output to display or a real translation. Deriving it
+ * from the resolved provider — instead of echoing the legacy `translationMode`
+ * storage field — means an upgraded profile whose stored mode is stale ("none"
+ * while a provider is selected) still gets its translations painted.
+ */
+function effectiveMode(provider) {
+  if (!provider) return "none";
+  if (provider.id === "google-free" || provider.id === "backend") return "free-translate";
+  return "openai-compatible";
+}
+
+/**
+ * Services that are, as a rule, unreachable from mainland China without a
+ * proxy. Kept as one list so the advice stays in one place.
+ */
+const UNREACHABLE_IN_MAINLAND = new RegExp(
+  [
+    "translate\\.googleapis\\.com",
+    "generativelanguage\\.googleapis\\.com",
+    "api\\.openai\\.com",
+    "api\\.anthropic\\.com",
+    "openrouter\\.ai",
+  ].map((host) => `(^|\\.)${host}$`).join("|"),
+  "i",
+);
+
+/**
+ * Turn a transport-level failure into something a user can act on.
+ *
+ * `fetch` collapses DNS failure, TLS failure, a blocked domain and a refused
+ * request into the same "Failed to fetch", so the message has to carry the two
+ * things `fetch` threw away: which service was being reached, and which of the
+ * causes is plausible. Observed in the wild as "翻译失败：无法连接翻译服务
+ * （Failed to fetch）" with no way to tell Google apart from a typo'd endpoint —
+ * the user's profile had Google selected on a network that cannot reach it.
+ */
+function describeConnectFailure(error, url, provider) {
+  let host = "";
+  try {
+    host = new URL(url).host;
+  } catch {
+    /* keep it empty; the message still names the provider */
+  }
+  const label = provider?.label ? `「${provider.label}」` : "翻译服务";
+  const at = host ? `${label}（${host}）` : label;
+  const detail = String(error?.message || error);
+  if (host && UNREACHABLE_IN_MAINLAND.test(host)) {
+    return `无法连接${at}：${detail}。该服务在国内网络通常无法直连（需要代理）；可在设置里改用 DeepSeek、通义千问等可直连的来源。`;
+  }
+  return `无法连接${at}：${detail}。请检查网络、接口地址，以及该域名是否已授权。`;
+}
+
+/** Fetch a provider endpoint, turning HTTP errors into readable messages. */
+async function providerFetch(url, init, provider, timeoutMs) {
+  let response;
+  if (provider?.id === "backend") {
+    const backends = await globalThis.MAS_backendCandidates();
+    const configured = url.slice(0, -"/api/translate-text".length);
+    if (configured !== provider.endpoint && !backends.includes(configured)) backends.unshift(configured);
+    let lastError = null;
+    response = null;
+    for (const base of backends) {
+      try {
+        const candidate = await timedFetch(`${base}/api/translate-text`, init);
+        if (candidate.ok || candidate.status !== 404) { response = candidate; break; }
+        lastError = new Error(`${base} 响应失败: ${candidate.status}`);
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    if (!response) throw new Error(`后端连接失败（${lastError?.message || "未配置后端"}）`);
+  } else {
+    try {
+      response = await timedFetch(url, init, timeoutMs);
+    } catch (error) {
+      throw new Error(describeConnectFailure(error, url, provider));
+    }
+  }
+
+  const text = await response.text();
+  let json = null;
+  try {
+    json = text ? JSON.parse(text) : null;
+  } catch {
+    // Some gateways answer with HTML on failure; keep a snippet for the message.
+  }
+  if (!response.ok) {
+    if (provider?.id === "bing-free" && [401, 403].includes(response.status)) {
+      provider.resetSession();
+      throw new Error(`必应网页翻译拒绝了会话（${response.status}）。可重试，或切换到 Microsoft Translator 官方 API。`);
+    }
+    const detail = json?.error?.message || json?.message || json?.detail ||
+      text.slice(0, 160).replace(/\s+/g, " ").trim();
+    // 429 and the anti-bot interstitial are the two failures users will hit
+    // most with the keyless endpoint, and "429" alone tells them nothing.
+    if (response.status === 429) {
+      throw new Error("翻译服务限流了（429）。稍后再试，或在设置里换用其它翻译来源。");
+    }
+    if ((response.status === 403 && !json) || /sorry\/index/.test(text)) {
+      throw new Error("翻译服务拒绝了这次请求（疑似反爬限制）。请换用其它翻译来源。");
+    }
+    throw new Error(`翻译服务返回 ${response.status}${detail ? `：${detail}` : ""}`);
+  }
+  // Let Bing's parser reset the cached session when the site returns HTML.
+  if (json === null && provider?.id !== "bing-free") {
+    throw new Error("翻译服务返回了非 JSON 内容，请检查接口地址是否正确");
+  }
+  return json;
+}
+
+/**
+ * Everything an adapter needs except the text itself.
+ *
+ * Shared by ordinary translation, the dictionary lookup and the paragraph
+ * translator's per-box language menu. Keeping one builder means a fix to model,
+ * strength or target resolution cannot apply to only one of those paths.
+ */
+function providerRequestCommon(provider, cfg, overrides = {}) {
+  const registry = globalThis.MAS_providers;
+  const settings = registry.providerSettings(cfg, provider.id);
+  return {
+    endpoint: (settings.translationEndpoint || provider.endpoint || "").replace(/\/+$/, ""),
+    apiKey: settings.translationApiKey,
+    appId: settings.translationAppId,
+    model: registry.resolveModel(provider, { ...settings, translationModelProvider: provider.id }),
+    mode: cfg.translationMode || "openai-compatible",
+    strength: globalThis.MAS_providers.normalizeStrength(cfg.translationStrength),
+    glossary: cfg.translationGlossary || "general",
+    providerId: provider.id,
+    source: overrides.source ?? provider.source ?? "ja",
+    // Chat models are told the language in words; code APIs already got a code.
+    sourceName: overrides.sourceName || "日文",
+    // One resolution rule, shared with the connectivity probe above. The
+    // paragraph translator may override it per box (its title menu).
+    target: overrides.target || globalThis.MAS_providers.resolveTarget(provider, cfg),
+    salt: Math.floor(Math.random() * 1e9),
+  };
+}
+
+/**
+ * Detect the base language of a sample.
+ *
+ * The script guess settles Chinese/Japanese/Korean/Cyrillic/Arabic/etc.
+ * without a round trip. Latin text goes through Chrome's local detector so a
+ * French sentence is not mistaken for English just because it uses the same
+ * alphabet.
+ */
+async function detectLanguageBase(sample) {
+  const text = String(sample || "").trim().slice(0, 800);
+  if (!text) return "";
+  const registry = globalThis.MAS_providers;
+  const script = registry.detectScriptLanguage(text);
+  if (!script) return "";
+  if (script !== "latin") return script;
+  if (typeof globalThis.chrome?.i18n?.detectLanguage !== "function") return script;
+  const result = await new Promise((resolve) => {
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), 800);
+    globalThis.chrome.i18n.detectLanguage(text, (detected) => {
+      clearTimeout(timer);
+      finish(detected);
+    });
+  });
+  const top = result?.languages?.[0];
+  return top?.language ? registry.languageBase(top.language) : script;
+}
+
+/**
+ * Translate a batch, preserving skipped items.
+ *
+ * A line already in the target language comes back unchanged and is marked in
+ * `skipped`, so callers can leave the original artwork/paragraph alone instead
+ * of drawing a translation of the same language over it. This is also why the
+ * provider is not called for those lines at all.
+ */
+async function runTranslationDetailed(texts, cfg, overrides = {}) {
+  const provider = resolveProvider(cfg);
+  if (!provider) throw new Error("未启用翻译");
+  const common = providerRequestCommon(provider, cfg, overrides);
+  if (!common.endpoint && provider.endpointEditable) {
+    throw new Error(`${provider.label} 需要填写接口地址`);
+  }
+
+  const registry = globalThis.MAS_providers;
+  const targetBase = registry.languageBase(common.target) ||
+    registry.languageBase(cfg.targetLanguage);
+  const sourceBase = registry.languageBase(overrides.sourceName) ||
+    registry.languageBase(common.source);
+  const skipped = new Array(texts.length).fill(false);
+  const pending = [];
+  for (let index = 0; index < texts.length; index += 1) {
+    const text = String(texts[index] ?? "");
+    if (!text.trim()) {
+      skipped[index] = true;
+      continue;
+    }
+    const sample = index === 0 && overrides.languageSample
+      ? overrides.languageSample
+      : text;
+    const mayDetectSource = !overrides.sourceLocked || !sourceBase;
+    // An English question can include Chinese instructions or glosses.
+    const mixedDocumentLine = overrides.translateMixed && targetBase === "zh" &&
+      /\p{Script=Han}/u.test(text) && (text.match(/\b[a-z]{2,}\b/gi)?.length || 0) >= 3;
+    if (targetBase && (
+      sourceBase === targetBase ||
+      (mayDetectSource && !mixedDocumentLine && (
+        registry.likelySameLanguage(text, targetBase, sample) ||
+        (await detectLanguageBase(sample)) === targetBase
+      ))
+    )) {
+      skipped[index] = true;
+      continue;
+    }
+    pending.push({ text, index });
+  }
+
+  const translations = texts.map((text) => String(text ?? ""));
+  if (!pending.length) return { translations, skipped };
+
+  // Google's public endpoint takes one query per request, so it is called once
+  // per text rather than in a batch. Awaited: adapters may be async (必应
+  // fetches its page tokens first), and without the await a Promise was passed
+  // to providerFetch — url undefined, fetch("undefined") failing as a bogus
+  // network error.
+  if (provider.perRequest) {
+    const fetchJson = (url, init) => providerFetch(url, init, provider);
+    for (const entry of pending) {
+      const text = entry.text;
+      const input = { ...common, text, texts: [text] };
+      if (provider.translateOne) {
+        translations[entry.index] = await provider.translateOne(input, fetchJson);
+        continue;
+      }
+      const request = await provider.adapter(input);
+      const json = await fetchJson(request.url, request.init);
+      translations[entry.index] = String(provider.parse(json, 1)[0] ?? "");
+    }
+    return { translations, skipped };
+  }
+
+  const request = await provider.adapter({
+    ...common,
+    texts: pending.map((entry) => entry.text),
+  });
+  const json = await providerFetch(request.url, request.init, provider);
+  const parsed = provider.parse(json, pending.length);
+  pending.forEach((entry, index) => {
+    translations[entry.index] = String(parsed[index] ?? "");
+  });
+  return { translations, skipped };
+}
+
+async function runTranslation(texts, cfg, overrides = {}) {
+  const { translations } = await runTranslationDetailed(texts, cfg, overrides);
+  return translations;
+}
+
+// Context controls can select registered providers, never arbitrary endpoints.
+async function applyQuickProvider(cfg, id) {
+  const registry = globalThis.MAS_providers;
+  if (!id || id === registry.resolveProviderId(cfg)) return;
+  const provider = registry.byId(id);
+  if (!provider?.adapter) throw new Error("无效的翻译来源");
+  const saved = await chrome.storage.local.get(registry.profileKey(id));
+  const settings = registry.providerSettings({ ...cfg, ...saved }, id);
+  const issue = registry.configurationIssue(provider, settings);
+  if (issue) throw new Error(`${provider.label}：${issue}，请前往扩展设置。`);
+  Object.assign(cfg, settings, {
+    translationProvider: id,
+    translationMode: effectiveMode(provider),
+    translationModelProvider: id,
+  });
+}
+
+
+/**
+ * Answer a selection lookup.
+ *
+ * Words get a structured dictionary entry when the selected source is an AI
+ * model. The entry is not fetched from a dictionary website: the prompt asks
+ * the model to organise its answer according to the standard dictionaries for
+ * the language (広辞苑 / 新明解 for Japanese, 现代汉语词典 for Chinese, Oxford /
+ * Longman for English) and to identify the sense used by the surrounding
+ * sentence. Non-AI providers cannot use this feature, including requests from
+ * a page that has not yet received the provider-change event.
+ */
+
+async function lookupSelection(rawText, rawContext, wantsDictionary = false, options = {}) {
+  const text = String(rawText || "").replace(/\s+/g, " ").trim().slice(0, 200);
+  const context = String(rawContext || "").replace(/\s+/g, " ").trim().slice(0, 600);
+  if (!text) throw new Error("没有选中文本");
+
+  const cfg = await chrome.storage.local.get([
+    "translationMode", "translationProvider", "translationEndpoint",
+    "translationModel", "translationModelProvider", "translationApiKey",
+    "translationAppId", "targetLanguage", "translationStrength",
+    "translationGlossary",
+  ]);
+  await applyQuickProvider(cfg, options.provider);
+  const provider = resolveProvider(cfg);
+  if (!provider) throw new Error("尚未选择翻译来源");
+
+  const registry = globalThis.MAS_providers;
+  if (!registry.isChatProvider(provider)) {
+    throw new Error("划词词典仅支持 AI 翻译，请切换到 DeepSeek 等 AI 来源");
+  }
+  const targetName = options.target || cfg.targetLanguage || "简体中文";
+  const targetLabel = registry.languageByName(targetName)?.name || targetName;
+  const overrides = {
+    source: registry.sourceForLanguage(provider, options.source || registry.autoSource),
+    sourceName: options.source || "自动识别",
+    sourceLocked: Boolean(registry.languageBase(options.source)),
+    target: registry.targetForLanguage(provider, targetName),
+  };
+  const common = providerRequestCommon(provider, cfg, overrides);
+  if (!common.endpoint && provider.endpointEditable) {
+    throw new Error(`${provider.label} 需要填写接口地址`);
+  }
+
+  let dictionaryError = "";
+  if (wantsDictionary) {
+    try {
+      const request = await provider.adapter({
+        ...common,
+        text,
+        texts: [text],
+        maxTokens: 4096,
+        prompt: registry.dictionaryPrompt(
+          text,
+          context,
+          targetLabel,
+          cfg.translationGlossary || "general",
+        ),
+      });
+      const json = await providerFetch(request.url, request.init, provider);
+      const content = registry.extractChatText(provider, json);
+      const entry = registry.parseDictionary(content);
+      if (!entry.word) entry.word = text;
+      return {
+        ok: true,
+        kind: "dictionary",
+        entry,
+        target: targetLabel,
+        provider: provider.label,
+      };
+    } catch (error) {
+      dictionaryError = String(error?.message || error).slice(0, 180);
+    }
+  }
+
+  try {
+    const { translations: translated, skipped } = await runTranslationDetailed(
+      [text],
+      cfg,
+      {
+        ...overrides,
+        // The selected word alone is often ambiguous; the surrounding sentence
+        // is what lets the detector see kana around a kanji-only selection.
+        languageSample: context ? `${text}\n${context}` : text,
+      },
+    );
+    if (skipped[0]) {
+      const reason = dictionaryError
+        ? `词典释义未能生成（${dictionaryError}）。`
+        : "";
+      return {
+        ok: true,
+        kind: "notice",
+        text,
+        target: targetLabel,
+        provider: provider.label,
+        notice: `原文已是${targetLabel}，无需翻译。${reason}`,
+      };
+    }
+    return {
+      ok: true,
+      kind: "text",
+      text,
+      translation: String(translated?.[0] ?? "").trim(),
+      target: targetLabel,
+      provider: provider.label,
+      notice: wantsDictionary
+        ? `词典释义未能生成（${dictionaryError}），已改为普通翻译。`
+        : "",
+    };
+  } catch (error) {
+    if (dictionaryError) {
+      throw new Error(
+        `词典释义失败：${dictionaryError}；普通翻译也失败：${String(error?.message || error)}`,
+      );
+    }
+    throw error;
+  }
+}
+
+async function translateTexts(msg, port) {
+  const cfg = await chrome.storage.local.get([
+    "translationMode", "translationProvider", "translationEndpoint",
+    "translationModel", "translationApiKey", "translationAppId", "targetLanguage",
+    "translationStrength", "translationModelProvider", "translationGlossary",
+  ]);
+  const provider = resolveProvider(cfg);
+  try {
+    // "Switched off" is a normal state, not a failure. It used to reach
+    // runTranslation, throw, and be reported as an error — which made every
+    // recognition look like something had gone wrong, and meant the content
+    // script's translation-off branch never ran at all.
+    if (!provider) {
+      postPortMessage(port, {
+        type: "TRANSLATION_RESULT",
+        requestId: msg.requestId,
+        mode: "none",
+        result: { ok: true, items: [] },
+      });
+      return;
+    }
+    const { translations: translated, skipped } =
+      await runTranslationDetailed(msg.texts || [], cfg, { sourceLocked: true });
+    postPortMessage(port, {
+      type: "TRANSLATION_RESULT",
+      requestId: msg.requestId,
+      mode: effectiveMode(provider),
+      result: {
+        ok: true,
+        items: (msg.texts || []).map((text, index) => ({
+          text,
+          translated: translated[index],
+          skipped: Boolean(skipped[index]),
+        })),
+      },
+    });
+  } catch (error) {
+    postPortMessage(port, {
+      type: "TRANSLATION_RESULT",
+      requestId: msg.requestId,
+      mode: "error",
+      result: { ok: false, error: error.message },
+    });
+  }
+}

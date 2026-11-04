@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MasLingo 设置</title>
+  <link rel="stylesheet" href="../ui/system.css">
+  <link rel="stylesheet" href="options.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">M</span><h1>MasLingo 设置</h1></div>
+      <p class="sub">设定你的阅读方式，让翻译自然融入网页、漫画和视频。</p>
+    </header>
+
+    <nav class="settings-nav" aria-label="设置分类"><a href="#reading" aria-current="location">阅读方式</a><a href="#providers">翻译来源</a><a href="#display">识别与显示</a></nav>
+    <div class="settings-content">
+    <section id="reading" data-settings-group="reading">
+      <h2>漫画自动翻译</h2>
+      <div class="row">
+        <div class="row-text">
+          <label class="label" for="autoTranslate">自动识别全图</label>
+          <div class="hint">打开后自动翻译页面上的漫画，译文跟随滚动，同一处不会重复处理。</div>
+        </div>
+        <label class="switch">
+          <input id="autoTranslate" type="checkbox">
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+        </label>
+      </div>
+      <div class="row">
+        <div class="row-text">
+          <label class="label" for="autoConcurrency">同时处理数量</label>
+          <div class="hint">越大越快，但对后端和翻译接口的压力也越大。</div>
+        </div>
+        <select id="autoConcurrency">
+          <option value="1">1</option>
+          <option value="2">2</option>
+          <option value="3">3</option>
+        </select>
+      </div>
+    </section>
+
+    <section data-settings-group="reading">
+      <h2>网页与视频翻译</h2>
+      <div class="row">
+        <div class="row-text"><label class="label" for="videoDisplayMode">视频字幕显示</label><div class="hint">在视频下方开启字幕翻译，控制条不遮挡画面。无字幕识别需共享当前标签页声音，并在后端启用语音模型；音频仅发送给设置中的后端。</div></div>
+        <select id="videoDisplayMode"><option value="bilingual">双语对照</option><option value="translated">纯译文</option><option value="source">纯原文</option></select>
+      </div>
+      <div class="row">
+        <div class="row-text"><label class="label" for="webAutoTranslate">网页自动翻译</label><div class="hint">按阅读位置分批翻译正文、标题、图注、列表和表格。保留原文中的链接、引用和公式，关闭后移除译文。</div></div>
+        <label class="switch"><input id="webAutoTranslate" type="checkbox"><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+      <div class="row">
+        <div class="row-text"><label class="label" for="webDisplayMode">网页显示模式</label><div class="hint">纯原文暂停新的自动翻译请求；纯译文模式遇到公式、控件等复杂段落时保留原结构。</div></div>
+        <select id="webDisplayMode"><option value="bilingual">双语对照</option><option value="translated">纯译文</option><option value="source">纯原文</option></select>
+      </div>
+      <div class="row">
+        <div class="row-text"><label class="label" for="hoverTranslate">悬停翻译</label><div class="hint">停留或聚焦文字后，译文显示在原文下方，移开鼠标后保留。也可在翻译窗口查看。</div></div>
+        <label class="switch"><input id="hoverTranslate" type="checkbox"><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+      <div class="row" id="selectionField">
+        <div class="row-text">
+          <label class="label" for="selectionTranslate">划词词典</label>
+          <div class="hint" id="selectionHint">仅支持 AI 翻译：选中文字，在翻译窗口查看词义、例句或短句译文。</div>
+          <label class="checkline" for="inputAutoReplace"><input id="inputAutoReplace" type="checkbox"><span>输入框选中文字后自动替换，可撤销</span></label>
+        </div>
+        <label class="switch"><input id="selectionTranslate" type="checkbox" aria-describedby="selectionHint"><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+    </section>
+
+    <section id="providers" data-settings-group="providers">
+      <h2>翻译来源</h2>
+      <div class="row">
+        <div class="row-text"><label class="label" for="translationProvider">使用哪个来源</label></div>
+        <select id="translationProvider"></select>
+      </div>
+      <div class="hint" id="providerNote"></div>
+      <div class="hint" id="providerKeyLink" hidden>
+        <a id="keyLink" href="#" target="_blank" rel="noreferrer noopener">获取密钥 →</a>
+      </div>
+
+      <div class="field" id="fieldEndpoint" hidden>
+        <label for="translationEndpoint">接口地址</label>
+        <input id="translationEndpoint" type="url" placeholder="https://example.com/v1/chat/completions">
+        <div class="hint" id="endpointHint"></div>
+      </div>
+
+      <div class="field" id="fieldModel" hidden>
+        <label for="translationModel">模型</label>
+        <input id="translationModel" type="text" list="providerModels">
+        <datalist id="providerModels"></datalist>
+      </div>
+
+      <div class="field" id="fieldAppId" hidden>
+        <label for="translationAppId" id="appIdLabel">APP ID</label>
+        <input id="translationAppId" type="text" autocomplete="off">
+      </div>
+
+      <div class="field" id="fieldKey" hidden>
+        <label for="translationApiKey" id="keyLabel">密钥</label>
+        <div class="input-with-action">
+          <input id="translationApiKey" type="password" autocomplete="new-password" placeholder="留空则保留已保存的密钥">
+          <button id="revealKey" type="button" class="subtle" aria-label="显示或隐藏密钥">显示</button>
+        </div>
+        <label class="checkline" for="clearApiKey">
+          <input id="clearApiKey" type="checkbox">
+          <span>清除已保存的密钥</span>
+        </label>
+        <div class="hint" id="keyStatus"></div>
+      </div>
+
+      <div class="field" id="fieldTarget" hidden>
+        <label for="targetLanguage">目标语言</label>
+        <input id="targetLanguage" type="text" list="targetLanguages" placeholder="简体中文">
+        <datalist id="targetLanguages"></datalist>
+        <div class="hint" id="targetHint"></div>
+      </div>
+
+      <div class="field" id="fieldGlossary">
+        <label for="translationGlossary">术语库</label>
+        <select id="translationGlossary"></select>
+        <div class="hint" id="glossaryHint">仅 AI 大模型来源生效：译文会优先采用所选领域的专业术语与表达。</div>
+      </div>
+
+      <div class="field"><label for="translationStrength">AI 翻译润色</label><select id="translationStrength"><option value="0">Low · 轻度润色</option><option value="1">High · 结合上下文润色</option><option value="2">Max · 逐条复核</option></select><p class="hint">仅 AI 来源生效。联网核对取决于翻译接口是否支持检索。</p></div>
+      <div class="row-actions">
+        <button id="test" type="button" class="subtle">测试翻译</button>
+        <span class="hint" id="testResult" hidden></span>
+      </div>
+    </section>
+
+    <section id="display" data-settings-group="display">
+      <h2>漫画译文显示</h2>
+      <div class="field">
+        <label for="fontScale">字号 <output id="fontScaleValue">100%</output></label>
+        <input id="fontScale" type="range" min="60" max="160" step="5" value="100">
+      </div>
+      <div class="field">
+        <label for="overlayOpacity">不透明度 <output id="overlayOpacityValue">100%</output></label>
+        <input id="overlayOpacity" type="range" min="30" max="100" step="5" value="100">
+      </div>
+    </section>
+
+    <section data-settings-group="display">
+      <h2>识别</h2>
+      <div class="field">
+        <label for="backendUrl">OCR 后端地址</label>
+        <input id="backendUrl" type="url" placeholder="http://127.0.0.1:8001">
+        <div class="hint" id="backendHint">识别会把漫画画面发送到这个后端；也用于无字幕视频的本地语音识别。</div>
+      </div>
+      <label class="checkline" for="debugMode">
+        <input id="debugMode" type="checkbox" checked>
+        <span>显示识别到的日文原文</span>
+      </label>
+    </section>
+
+    <section class="about" data-settings-group="display">
+      <h2>关于</h2>
+      <div class="row">
+        <div class="row-text"><div class="label">版本</div></div>
+        <span class="value" id="version">—</span>
+      </div>
+    </section>
+
+    <footer>
+      <button id="save" class="primary">保存设置</button>
+      <span id="result" class="result" role="status" aria-live="polite" hidden></span>
+    </footer>
+    </div>
+  </main>
+
+  <script src="../config.js"></script>
+  <script src="../translation/providers.js"></script>
+  <script src="options.js"></script>
+</body>
+</html>

@@ -1,0 +1,47 @@
+.venv/
+backend/.env
+__pycache__/
+*.pyc
+
+# Extension signing keys and built packages must never be committed.
+*.pem
+*.crx
+*.zip
+
+# Local deployment secrets (domain, tuning) — see deploy/.env.example
+deploy/.env
+
+# Local OCR model cache when running the backend outside Docker
+.hf/
+
+# On-device OCR assets: fetched by tools/fetch_ocr_assets.py, never committed
+# (the wasm runtime is ~14 MB and the int8 model is ~111 MB).
+extension/vendor/
+extension/models/
+
+# Node tooling
+node_modules/
+/desktop/generated/
+/dist/
+
+# 用户提供的原图样本，不入库
+Image from URL*
+
+# 本地测试用漫画页（版权原因不入库）；需要入库的样例放 tools/fixtures/
+/*.jpg
+/*.jpeg
+/*.png
+/*.webp
+
+# UI 截图（deploy/screenshot-ui.mjs 生成）
+deploy/screenshots/
+
+# 测试语料（合成生成，可随时重建）
+testdata/
+
+# 抓取的真实漫画页（仅本地度量，不入库）
+testdata/real/
+
+# Build outputs: the staged payload alone is ~1.5 GB and is reproducible
+# from packaging/build.ps1. Never commit it.
+/build/

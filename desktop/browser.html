@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MasLingo 浏览器伴侣</title>
+<link rel="stylesheet" href="../extension/ui/system.css">
+<link rel="stylesheet" href="shell.css">
+<script defer src="browser.js"></script>
+<main class="instructions">
+  <h1>浏览器伴侣</h1>
+  <p>在日常使用的 Chrome 或 Edge 中翻译网页正文、查词、识别漫画、翻译视频字幕。</p>
+  <ol>
+    <li>打开 Chrome 的 <code>chrome://extensions</code> 或 Edge 的 <code>edge://extensions</code>。</li>
+    <li>打开开发人员模式，点击「加载解压缩的扩展」，选择下面的伴侣文件夹。</li>
+    <li>在浏览器伴侣的设置中选择翻译来源。漫画识别和语音识别可使用同一个本机 MasLingo 后端。</li>
+  </ol>
+  <code id="path"></code>
+  <button id="folder" type="button" class="primary">打开伴侣文件夹</button>
+  <p id="status" role="status"></p>
+</main>
+</html>

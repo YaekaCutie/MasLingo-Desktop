@@ -1,0 +1,81 @@
+body {
+  width: 330px;
+}
+main {
+  padding: 20px;
+}
+header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+h1 {
+  font-size: 18px;
+}
+.wide {
+  width: 100%;
+}
+.document-entry {
+  margin-top: 8px;
+}
+.intro {
+  margin: 9px 0 22px;
+}
+.feature {
+  padding: 14px 0;
+  border-top: 1px solid var(--line);
+}
+.feature-title {
+  font-size: 14px;
+  font-weight: 550;
+  color: var(--ink);
+}
+.feature .hint {
+  margin-top: 7px;
+}
+.feature-head + .hint + .feature-head {
+  margin-top: 18px;
+}
+.state {
+  margin-top: 8px;
+}
+.feature.muted {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: 6px;
+}
+.feature.muted .hint {
+  grid-column: 1/-1;
+  margin: 0;
+}
+details {
+  border-top: 1px solid var(--line);
+  padding-top: 14px;
+}
+summary {
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 12px;
+}
+pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font: 12px/1.65 inherit;
+  background: var(--soft);
+  padding: 10px;
+  border-radius: 6px;
+}
+.detail-actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+.detail-actions button {
+  font-size: 12px;
+  padding: 6px 8px;
+}
+main {
+  animation: enter 0.18s ease-out;
+}

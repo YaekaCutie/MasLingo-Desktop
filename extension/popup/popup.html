@@ -1,0 +1,70 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MasLingo</title>
+  <link rel="stylesheet" href="../ui/system.css">
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main>
+    <header>
+      <div class="brand"><span class="brand-mark" aria-hidden="true">M</span><h1>MasLingo</h1></div>
+      <button id="settings" class="icon-btn" title="设置" aria-label="设置">设置</button>
+    </header>
+
+    <button id="openReader" class="primary wide" disabled>打开翻译窗口 →</button>
+    <a id="openDocument" class="action-link document-entry" href="../document/document.html" target="_blank" rel="noopener">
+      文档翻译 <span aria-hidden="true">↗</span>
+    </a>
+    <p class="hint intro">译文在侧栏，阅读在眼前。</p>
+    <section class="feature">
+      <div class="feature-head">
+        <label class="feature-title" for="autoTranslate">漫画自动翻译</label>
+        <label class="switch">
+          <input id="autoTranslate" type="checkbox">
+          <span class="switch-track"><span class="switch-thumb"></span></span>
+        </label>
+      </div>
+      <div class="state" id="autoState">
+        <span class="state-dot"></span><span id="autoStateText">未开启</span>
+      </div>
+      <p class="hint">开启后自动识别页面上的漫画并翻译，译文跟随滚动，同一处不会重复处理。</p>
+    </section>
+
+    <section class="feature">
+      <div class="feature-head">
+        <label class="feature-title" for="webAutoTranslate">网页自动翻译</label>
+        <label class="switch"><input id="webAutoTranslate" type="checkbox"><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+      <p class="hint">按阅读位置翻译正文、标题和图注，可在侧栏中切换双语、纯译文和纯原文。</p>
+      <div class="feature-head">
+        <label class="feature-title" for="hoverTranslate">悬停翻译</label>
+        <label class="switch"><input id="hoverTranslate" type="checkbox"><span class="switch-track"><span class="switch-thumb"></span></span></label>
+      </div>
+      <p class="hint">停留在文字上，译文显示在原文下方，移开鼠标后保留。</p>
+    </section>
+
+    <section class="feature muted">
+      <div class="feature-title">手动翻译</div>
+      <button id="select">框选翻译</button>
+      <p class="hint">在漫画上拖一个框，只翻译这一块。</p>
+    </section>
+
+    <details id="details">
+      <summary>诊断信息</summary>
+      <pre id="autoDiag">自动翻译：未开启</pre>
+      <pre id="status" role="status" aria-live="polite">准备就绪</pre>
+      <div class="detail-actions">
+        <button id="health" class="ghost">检查 OCR 后端</button>
+        <button id="autoPage" class="ghost">识别整页气泡</button>
+      </div>
+    </details>
+  </main>
+
+  <script src="../config.js"></script>
+  <script src="../translation/providers.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

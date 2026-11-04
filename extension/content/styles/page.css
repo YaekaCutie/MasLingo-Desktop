@@ -1,0 +1,6 @@
+/* Selection is an explicit temporary mode; results and status use the reader. */
+.maslingo-selection{position:fixed;inset:0;z-index:2147483647;overflow:hidden;cursor:crosshair;touch-action:none;user-select:none;-webkit-user-select:none}
+.maslingo-selection-rect{position:fixed;box-sizing:border-box;border:2px solid #285de5;background:transparent;pointer-events:none}
+.maslingo-selection-size{position:absolute;top:100%;left:0;margin-top:6px;padding:3px 8px;border:1px solid #e5e9ef;border-radius:4px;background:#fff;color:#18212f;font:12px/1.4 system-ui,'Microsoft YaHei',sans-serif;white-space:nowrap}
+.maslingo-overlay{position:fixed;z-index:2147483646;box-sizing:border-box;border:2px dashed #285de5;background:transparent;pointer-events:none}
+.maslingo-overlay-page{display:none}.maslingo-overlay-loading{display:none}

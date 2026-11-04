@@ -1,0 +1,494 @@
+import math
+import os
+import re
+from functools import lru_cache
+from pathlib import Path
+
+import numpy as np
+import torch
+from huggingface_hub import snapshot_download
+from huggingface_hub.errors import LocalEntryNotFoundError
+from PIL import Image, ImageEnhance, ImageOps
+from manga_ocr import MangaOcr
+
+MODEL_ID = "kha-white/manga-ocr-base"
+
+# Below this, the reading is treated as the model answering noise rather than
+# text — but only when the reading is also short. See is_confident_reading.
+MIN_CONFIDENCE = float(os.getenv("MAS_MIN_CONFIDENCE", "0.45"))
+# Measured on two real pages, one Japanese and one English, sorted by confidence,
+# true and false readings interleave: 0.419 true, 0.408 true, 0.391 false,
+# 0.381 true, 0.376 true, 0.364 false, 0.341 false. No threshold separates them
+# cleanly, so this is a deliberate trade-off rather than a solved problem:
+#   * at 0.45 with the length rule below, all eight invented readings across the
+#     four pages are removed, and two genuine ones are lost as well (a sound
+#     effect and a balloon line on a dialogue-dense spread);
+#   * lowering it to ~0.36 keeps those two but lets several invented readings
+#     through again.
+# It errs towards removing them because a wrong reading paints white over the
+# artwork, while a missing one leaves Japanese the user can still select by hand.
+# Both values are environment-tunable so this can be revisited without an edit.
+MIN_CONFIDENCE_TEXT_LENGTH = int(os.getenv("MAS_MIN_CONFIDENCE_LENGTH", "8"))
+
+# Short readings carry almost no evidence, so the model has to be sure of them.
+#
+# Measured on Japanese pages, the fragments the model produces when it has
+# nothing to read are short and only moderately confident — 'そして、' 0.56,
+# 'この' 0.58, '●' 0.69, 'バ' 0.55, 'くっ…' 0.48 — while every genuine short line
+# scored far higher: '楓ちゃんね♥' 1.00, 'え！？' 1.00, '魚' 0.77. A single
+# threshold cannot separate them because the fragments clear the ordinary bar;
+# a higher bar for short readings can.
+SHORT_READING_LENGTH = int(os.getenv("MAS_SHORT_READING_LENGTH", "5"))
+SHORT_READING_CONFIDENCE = float(os.getenv("MAS_SHORT_READING_CONFIDENCE", "0.75"))
+
+# A reading this unsure is the model answering texture, however long it is.
+#
+# The length escape in is_confident_reading lets a long reading through at
+# almost any confidence, on the argument that a long answer means the model
+# did read something. Lettering drawn over artwork breaks that argument:
+# measured on a dialogue-heavy spread, 'そういうことで、カリスマートそういう
+# ことで、' (stylised katakana over a face) came back at 0.147 and 'そして
+# そんなことは' (lettering the model half-guessed) at 0.259 — both long enough
+# to escape. The lowest *genuine* reading measured on the same pages sits at
+# 0.381, so this floor separates the two with margin.
+MIN_ALWAYS_CONFIDENCE = float(os.getenv("MAS_MIN_ALWAYS_CONFIDENCE", "0.30"))
+
+# A short reading with no kana is usually an art fragment ('魚' 0.77, '（'
+# 0.84), but a real two-kanji line — '若様？' on the same spread — read back at
+# 0.98. Above this bar the kanji-only reading is kept; every measured art
+# fragment stayed under 0.85, with the bar at 0.95 splitting the gap.
+KANJI_READING_CONFIDENCE = float(os.getenv("MAS_KANJI_READING_CONFIDENCE", "0.95"))
+
+# One- and two-character kana readings with no punctuation are held to this.
+#
+# Reading more candidates (see MAX_TEXT_REGIONS) surfaces small ink clusters
+# in faces and hair, and the model answers those with a *confident* single
+# kana: measured over one test set, 'ッ' 0.782, 'と' 0.867, 'し' 0.893,
+# 'へ' 0.915, 'ノ' 0.918, 'クフ' 0.851, '・' 0.861 — while genuine short
+# lines either carry punctuation ('え！？' 1.00) or are read at near-certainty.
+# A bare 'ん' at 0.76 is the measured cost, and it is the right trade: those
+# fragments were invented from artwork nine times for every genuine line.
+SHORT_BARE_READING_CONFIDENCE = float(
+    os.getenv("MAS_SHORT_BARE_READING_CONFIDENCE", "0.98")
+)
+_READING_PUNCTUATION = "！？!?。、…‥"
+
+
+def _has_kana(text: str) -> bool:
+    return any(
+        "\u3040" <= character <= "\u30ff" or "\uff66" <= character <= "\uff9f"
+        for character in text
+    )
+
+
+def _has_kanji(text: str) -> bool:
+    return any("\u4e00" <= character <= "\u9fff" for character in text)
+
+
+def _kanji_count(text: str) -> int:
+    return sum(1 for character in text if "\u4e00" <= character <= "\u9fff")
+
+# Share of full-width Latin letters above which a reading is rejected.
+#
+# This targets one specific failure with no ambiguity in it: given English
+# lettering the model answers in full-width Latin, producing things like
+# 'Ｄｏ．ｙｏｕ．ｃｏｌｕｄｙｓｅｄｏｎｉｔｉｏｎｅでは…'. Such readings scored 0.46
+# and 0.49 confidence, so the confidence rule alone let them through and they
+# were painted onto the drawing as if they were Japanese.
+#
+# Swept with tools/tune_thresholds.py over a page that is entirely English
+# (where every reading is invented by definition) and a Japanese page whose
+# balloons were transcribed by hand. The measured margins are thin and worth
+# knowing: genuine readings that legitimately contain Latin (a move name in a
+# decorative box, a line mentioning VTuber) reached 0.38 and 0.27, while invented
+# full-width Latin reached 0.74 and 0.85. 0.45 sits in that gap. An earlier sweep
+# without those two genuine cases picked 0.20 and quietly killed the move name.
+MIN_LATIN_RATIO = float(os.getenv("MAS_MIN_LATIN_RATIO", "0.45"))
+
+_FULLWIDTH_LATIN = set(
+    "ＡＢＣＤＥＦＧＨＩＪＫＬＭＮＯＰＱＲＳＴＵＶＷＸＹＺ"
+    "ａｂｃｄｅｆｇｈｉｊｋｌｍｎｏｐｑｒｓｔｕｖｗｘｙｚ"
+    "０１２３４５６７８９"
+)
+
+
+def latin_ratio(text: str) -> float:
+    """Share of the reading that is Latin letters, half- or full-width."""
+    if not text:
+        return 0.0
+    count = sum(1 for character in text if character in _FULLWIDTH_LATIN)
+    count += sum(1 for character in text if character.isascii() and character.isalpha())
+    return count / len(text)
+
+
+def _bundled_model_dir():
+    """The weights that shipped inside the installer, if there are any.
+
+    The desktop build carries the model as a plain directory rather than as a
+    HuggingFace cache. That is worth the code: the cache stores each file twice —
+    once under `blobs/` and once under `snapshots/` — because Windows only creates
+    symlinks when Developer Mode is on. Measured, the packaged payload was
+    2541 MB with 1694 MB of it being the same 847 MB of weights copied twice.
+
+    A plain directory has no layout to maintain and no cache to keep consistent,
+    so the packaged engine also stops depending on huggingface_hub's cache
+    resolution at startup. Development keeps using the normal cache path, which
+    is what the fallback below is.
+
+    MASLINGO_MODEL_DIR overrides both, for testing a packaged layout in place.
+    """
+    override = os.environ.get("MASLINGO_MODEL_DIR")
+    if override:
+        candidate = Path(override)
+        return candidate if (candidate / "config.json").is_file() else None
+
+    # backend/ocr/manga_ocr_engine.py -> repo root
+    candidate = Path(__file__).resolve().parents[2] / "models" / MODEL_ID.rsplit("/", 1)[-1]
+    return candidate if (candidate / "config.json").is_file() else None
+
+
+@lru_cache(maxsize=1)
+def get_engine():
+    bundled = _bundled_model_dir()
+    if bundled is not None:
+        return MangaOcr(str(bundled))
+    try:
+        model_path = snapshot_download(MODEL_ID, local_files_only=True)
+    except LocalEntryNotFoundError:
+        model_path = snapshot_download(MODEL_ID)
+    return MangaOcr(str(Path(model_path)))
+
+
+def _prepare_image(image):
+    img = image.convert("RGB")
+    width, height = img.size
+    max_side = max(width, height)
+    scale = 1.0
+
+    if max_side < 512:
+        scale = 512 / max_side
+    elif max_side > 1800:
+        scale = 1800 / max_side
+
+    if scale != 1.0:
+        img = img.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.LANCZOS,
+        )
+
+    img = ImageOps.autocontrast(img)
+    img = ImageEnhance.Contrast(img).enhance(1.5)
+    return img
+
+
+def _normalize_texts(raw_text):
+    if raw_text is None:
+        return []
+
+    if isinstance(raw_text, (list, tuple)):
+        texts = [str(item).strip() for item in raw_text]
+    else:
+        texts = [str(raw_text).strip()]
+
+    normalized = []
+    for text in texts:
+        for line in re.split(r"\r?\n+", text):
+            cleaned = " ".join(line.split())
+            if cleaned:
+                normalized.append(cleaned)
+    return normalized
+
+
+def _otsu_threshold(gray):
+    histogram = np.asarray(gray.histogram(), dtype=np.float64)
+    total = histogram.sum()
+    levels = np.arange(256, dtype=np.float64)
+    background_weight = np.cumsum(histogram)
+    background_sum = np.cumsum(histogram * levels)
+    denominator = background_weight * (total - background_weight)
+    between_class_variance = np.zeros(256, dtype=np.float64)
+    valid = denominator > 0
+    between_class_variance[valid] = (
+        (background_sum[-1] * background_weight[valid] - background_sum[valid] * total) ** 2
+        / denominator[valid]
+    )
+    return min(220, max(80, int(np.argmax(between_class_variance))))
+
+
+def _detect_text_direction(image):
+    gray = ImageOps.grayscale(image)
+    width, height = gray.size
+    scale = min(1.0, 512 / width, 768 / height)
+    if scale < 1.0:
+        gray = gray.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.BOX,
+        )
+
+    width, height = gray.size
+    gray_pixels = np.asarray(gray, dtype=np.uint8)
+    shortest_side = min(width, height)
+    if shortest_side < 24:
+        return None
+
+    threshold = _otsu_threshold(gray)
+    smallest_cell = max(4, shortest_side // 28)
+    cell_step = max(2, shortest_side // 24)
+    largest_cell = max(smallest_cell + 1, shortest_side // 2)
+    results = []
+    for ink_mask in (gray_pixels < threshold, gray_pixels > threshold):
+        scale_votes = []
+        for cell_size in range(smallest_cell, largest_cell, cell_step):
+            offset_scores = {"horizontal": [], "vertical": []}
+            for offset_y in (0, cell_size // 2):
+                for offset_x in (0, cell_size // 2):
+                    right = width - offset_x
+                    bottom = height - offset_y
+                    columns = right // cell_size
+                    rows = bottom // cell_size
+                    if columns < 2 or rows < 2:
+                        continue
+
+                    sample = ink_mask[
+                        offset_y:offset_y + rows * cell_size,
+                        offset_x:offset_x + columns * cell_size,
+                    ]
+                    cell_density = sample.reshape(
+                        rows, cell_size, columns, cell_size
+                    ).mean(axis=(1, 3))
+                    occupied = cell_density >= 0.12
+                    occupied_count = int(occupied.sum())
+                    coverage = occupied_count / occupied.size
+                    if occupied_count < 4 or coverage < 0.01 or coverage > 0.6:
+                        continue
+
+                    horizontal_pairs = int(np.count_nonzero(occupied[:, :-1] & occupied[:, 1:]))
+                    vertical_pairs = int(np.count_nonzero(occupied[:-1, :] & occupied[1:, :]))
+                    pair_count = horizontal_pairs + vertical_pairs
+                    if pair_count < 2:
+                        continue
+
+                    difference = horizontal_pairs - vertical_pairs
+                    dominance = abs(difference) / pair_count
+                    support = min(1.0, pair_count / (occupied_count * 0.5))
+                    score = dominance * support
+                    direction = "horizontal" if difference > 0 else "vertical"
+                    offset_scores[direction].append(score)
+
+            horizontal_score = sum(offset_scores["horizontal"])
+            vertical_score = sum(offset_scores["vertical"])
+            if max(horizontal_score, vertical_score) >= 0.2:
+                scale_votes.append((horizontal_score, vertical_score))
+
+        if len(scale_votes) < 2:
+            continue
+
+        horizontal_votes = sum(horizontal > vertical for horizontal, vertical in scale_votes)
+        vertical_votes = sum(vertical > horizontal for horizontal, vertical in scale_votes)
+        winning_votes = max(horizontal_votes, vertical_votes)
+        if winning_votes / len(scale_votes) < 0.7:
+            continue
+
+        if horizontal_votes > vertical_votes:
+            direction_scores = [horizontal - vertical for horizontal, vertical in scale_votes]
+            direction = "horizontal"
+        else:
+            direction_scores = [vertical - horizontal for horizontal, vertical in scale_votes]
+            direction = "vertical"
+
+        confidence = sum(score for score in direction_scores if score > 0) / winning_votes
+        if confidence >= 0.35:
+            results.append((direction, confidence))
+
+    return max(results, key=lambda result: result[1])[0] if results else None
+
+
+def _vertical_column_bounds(image, direction=None):
+    gray = ImageOps.grayscale(image)
+    width, height = gray.size
+    if direction is None:
+        direction = _detect_text_direction(image)
+    if width < 32 or height < 48 or direction != "vertical":
+        return []
+
+    scale = min(1.0, 512 / width, 768 / height)
+    if scale < 1.0:
+        scan = gray.resize(
+            (max(1, int(width * scale)), max(1, int(height * scale))),
+            Image.Resampling.BILINEAR,
+        )
+    else:
+        scan = gray
+
+    pixels = np.asarray(scan, dtype=np.uint8)
+    threshold = 160
+    columns_by_polarity = []
+    for ink_mask in (pixels < threshold, pixels > threshold):
+        ink_by_column = ink_mask.sum(axis=0)
+        # Note: raising this threshold to 5% was measured and rejected — it
+        # made the splitter fire on balloon crops whose whole-crop read is
+        # better, and the column-by-column readings failed the confidence gate.
+        ink_threshold = max(2, int(scan.height * 0.01))
+        active = ink_by_column >= ink_threshold
+        max_gap = max(3, int(scan.height * 0.025))
+        groups = []
+        active_columns = np.flatnonzero(active)
+        if active_columns.size == 0:
+            continue
+        group_start = last_active = int(active_columns[0])
+        for column in active_columns[1:]:
+            column = int(column)
+            if column - last_active - 1 > max_gap:
+                groups.append((group_start, last_active + 1))
+                group_start = column
+            last_active = column
+        groups.append((group_start, last_active + 1))
+
+        min_width = max(4, int(scan.height * 0.035))
+        max_width = int(scan.height * 0.4)
+        min_vertical_span = int(scan.height * 0.3)
+        columns = []
+        for left, right in groups:
+            if right - left < min_width or right - left > max_width:
+                continue
+            occupied_rows = np.flatnonzero(ink_mask[:, left:right].any(axis=1))
+            if occupied_rows.size and occupied_rows[-1] - occupied_rows[0] >= min_vertical_span:
+                columns.append((left, right))
+        if len(columns) >= 2:
+            columns_by_polarity.append(columns)
+
+    if not columns_by_polarity:
+        return []
+    columns = max(columns_by_polarity, key=len)
+    columns.sort(key=lambda bounds: bounds[0], reverse=True)
+    return [
+        (max(0, int(left / scale)), min(width, int((right - 1) / scale) + 1))
+        for left, right in columns
+    ]
+
+
+def _confidence(engine, image, text):
+    """How likely the model thinks `text` is, given the image.
+
+    MangaOcr.__call__ throws this away. It is the one signal that separates real
+    lettering from artwork the detector mistook for text: asked about hair
+    texture, the model still produces fluent Japanese ("そういえば、"), but with
+    a much lower per-token probability than for text it can actually read.
+
+    Computed by teacher-forcing the text that was already produced, so the
+    recognition path itself is untouched — the reading cannot change because of
+    this. Returns exp(-mean cross entropy), i.e. 1.0 for certainty.
+    """
+    if not text:
+        return 0.0
+    prepared = image.convert("L").convert("RGB")
+    pixel_values = engine.processor(prepared, return_tensors="pt").pixel_values
+    pixel_values = pixel_values.to(engine.model.device)
+    labels = engine.tokenizer(text, return_tensors="pt").input_ids
+    labels = labels.to(engine.model.device)
+    with torch.no_grad():
+        loss = engine.model(pixel_values=pixel_values, labels=labels).loss
+    return math.exp(-float(loss))
+
+
+def is_confident_reading(text, confidence):
+    """Whether a reading is worth keeping.
+
+    Only for regions the *detector* guessed at. When the user drew the box
+    themselves the reading is theirs to judge, and is never dropped here.
+
+    Confidence alone does not separate the two cases cleanly: on a real page the
+    invented readings ("そういえば、", from hair) scored 0.33 and 0.34, while a
+    genuine line inside a decorative box scored 0.38 — the model had to guess at
+    the hatching around it. Length breaks the tie, because a short low-confidence
+    answer is the signature of replying to texture, whereas a long one means the
+    model did read something and merely struggled in places. The Latin share
+    catches a third case the other two miss: English lettering answered in
+    full-width Latin, at a confidence high enough to pass both. Short readings
+    are held to a higher bar still — see SHORT_READING_CONFIDENCE.
+
+    Measured with tools/tune_thresholds.py over a page that is entirely English
+    (so every reading from it is invented) and a Japanese page whose balloons
+    were transcribed by hand: four of four genuine readings survive, none of the
+    inventions do.
+    """
+    if confidence < MIN_ALWAYS_CONFIDENCE:
+        return False
+    if latin_ratio(text) >= MIN_LATIN_RATIO:
+        return False
+    length = sum(1 for character in text if character.isalnum())
+    if length <= SHORT_READING_LENGTH:
+        # A short answer also has to look like speech. Isolated kanji and bare
+        # punctuation are what a region of artwork produces — a running figure
+        # came back as '魚' at 0.77 and a hand as '（' at 0.84 — and no dialogue
+        # line is ever just those. Sound effects and drawn-in lettering are
+        # deliberately out of scope, so requiring kana costs nothing wanted.
+        # The one measured exception is a genuine all-kanji line, '若様？' at
+        # 0.98: far more sure than any art fragment ever scored, so the
+        # no-kana rule stops at that bar instead of dropping it.
+        if not _has_kana(text):
+            # Two kanji minimum: a lone kanji at high confidence is what a
+            # fragment of a larger line looks like. Measured on a Chinese
+            # page's title, single '本' and '源' came back at 0.997 and 0.998.
+            return (
+                _kanji_count(text) >= 2
+                and confidence >= KANJI_READING_CONFIDENCE
+            )
+        if length <= 2 and not any(mark in text for mark in _READING_PUNCTUATION):
+            # See SHORT_BARE_READING_CONFIDENCE: a bare 'ッ' or 'し' this
+            # short is indistinguishable from an art fragment unless the
+            # model is essentially certain.
+            return confidence >= SHORT_BARE_READING_CONFIDENCE
+        return confidence >= SHORT_READING_CONFIDENCE
+    if confidence >= MIN_CONFIDENCE:
+        return True
+    return length > MIN_CONFIDENCE_TEXT_LENGTH
+
+
+def recognize_detailed(image):
+    """Recognise text and report the writing direction that was used.
+
+    The direction is decided here, from the pixels, by _detect_text_direction.
+    Anything that lays the translation back into the artwork must use this
+    verdict instead of guessing from the box's aspect ratio: a two-line
+    horizontal block is taller than it is wide, and the aspect-ratio guess
+    would typeset it as a single vertical column.
+
+    Returns {"texts": [...], "direction": "horizontal" | "vertical" | None}.
+    """
+    engine = get_engine()
+    prepared = _prepare_image(image)
+    direction = _detect_text_direction(image)
+    texts = _normalize_texts(engine(prepared))
+    confidence = _confidence(engine, prepared, "".join(texts))
+
+    # Columns are only split when the vote says vertical, and the split has to
+    # earn its keep against the plain whole-crop read. Measured on a real
+    # spread, the whole crop beat the split on every balloon whose columns
+    # were cleanly separable but one (0.936 against 0.921 on a two-column
+    # shout), and on a balloon whose *frame* strokes were picked up as two
+    # thin columns the split collapsed the reading from 0.747 to 0.015 — the
+    # frame was read and the dialogue thrown away. Comparing the two readings
+    # by confidence keeps the split when it genuinely helps without trusting
+    # it blindly: a garbled split always loses to the whole crop.
+    columns = _vertical_column_bounds(image, direction)
+    if columns:
+        column_text = "".join(
+            "".join(
+                _normalize_texts(
+                    engine(_prepare_image(image.crop((left, 0, right, image.height))))
+                )
+            )
+            for left, right in columns
+        )
+        if column_text:
+            column_confidence = _confidence(engine, prepared, column_text)
+            if column_confidence > confidence:
+                texts = [column_text]
+                confidence = column_confidence
+
+    return {"texts": texts, "direction": direction, "confidence": confidence}
+
+
+def recognize(image):
+    return recognize_detailed(image)["texts"]

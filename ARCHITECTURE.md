@@ -1,0 +1,9 @@
+# MasLingo Desktop 架构
+
+桌面版从 MasLingo 的 `04c3703` 移植。浏览器页面由用户的 Chrome 或 Edge 渲染。桌面窗口只加载随应用打包的工作台、框选层、文档、设置及伴侣安装说明。
+
+- `desktop/main.cjs` 管理全局快捷键、剪贴板、显示器截图、截图裁剪、Windows OCR 和本机 Python 进程。框选时先捕获鼠标所在显示器的画面。截图保留在应用内存，裁剪临时文件在识别结束后删除。
+- `desktop/windows-ocr.ps1` 使用 Windows.Media.Ocr 识别屏幕截图及本地图片。支持语言由系统识别包决定。
+- `desktop/bridge.cjs` 校验窗口来源和角色，连接桌面界面与翻译后台。独立会话负责翻译及文档 HTTP 请求。桌面设置通过 Windows 系统加密保存。
+- `extension/` 是 Chrome／Edge 浏览器伴侣，并保存桌面复用的翻译来源、文档与设置界面。伴侣处理真实网页的文字、图片和视频字幕。查词与诊断使用独立的浏览器翻译窗口。
+- `backend/` 保留 FastAPI 后端和现有漫画 OCR、修复、文档格式及视频语音识别接口。桌面应用和浏览器伴侣可共用同一个后端。

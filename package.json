@@ -1,0 +1,23 @@
+{
+  "name": "maslingo-desktop",
+  "version": "1.0.0",
+  "description": "Desktop translation for web pages, manga, video, and documents",
+  "main": "desktop/main.cjs",
+  "scripts": {
+    "prepare": "node desktop/prepare.cjs",
+    "prestart": "npm run prepare",
+    "start": "electron .",
+    "package:win": "npm run prepare && node desktop/package.cjs"
+  },
+  "type": "commonjs",
+  "devDependencies": {
+    "@electron/packager": "20.3.0",
+    "electron": "45.2.2"
+  },
+  "productName": "MasLingo Desktop",
+  "private": true,
+  "dependencies": {
+    "franc-min": "6.2.0",
+    "iso-639-3": "3.0.1"
+  }
+}

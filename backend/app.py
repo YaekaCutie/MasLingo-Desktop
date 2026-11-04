@@ -1,0 +1,446 @@
+"""MangaOCR backend.
+
+The same app serves two very different deployments:
+
+* the original local-only mode, where one user runs it on loopback, and
+* a shared public instance, where many strangers hit one small free VM.
+
+The public case needs three things the local one does not, so they are all
+controlled by environment variables that default to the local behaviour:
+
+* inference runs off the event loop, so one slow page no longer blocks every
+  other request (and ``/health`` keeps answering while OCR is busy);
+* OCR concurrency is capped, so a 4-core box is not thrashed by parallel pages;
+* a per-IP rate limit keeps a single client from monopolising the instance.
+"""
+
+import asyncio
+import logging
+import os
+import time
+from collections import defaultdict, deque
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
+from pydantic import BaseModel, Field
+from PIL import UnidentifiedImageError
+from starlette.concurrency import run_in_threadpool
+
+from .image.decode import decode_image
+from .net_guard import assert_safe_endpoint
+from .ocr.bubble_detector import MAX_TEXT_REGIONS
+from .ocr.text_detector import detect_text_regions, get_detector
+from .image.erase import make_erase_patch
+from .ocr.manga_ocr_engine import (
+    get_engine,
+    is_confident_reading,
+    recognize,
+    recognize_detailed,
+)
+from .translation.local_translator import translate_texts
+from .translation.openai_compatible import translate_texts as translate_openai_compatible
+from .speech import router as speech_router
+from .document import router as document_router
+
+logger = logging.getLogger(__name__)
+MAX_IMAGE_BYTES = 15 * 1024 * 1024
+
+# uvicorn only configures its own loggers, so without this our own messages
+# (including the model preload line the deployment guide tells operators to
+# look for) would never reach the container logs.
+logging.basicConfig(
+    level=os.getenv("MAS_LOG_LEVEL", "INFO"),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+
+OCR_CONCURRENCY = max(1, int(os.getenv("MAS_OCR_CONCURRENCY", "2")))
+RATE_LIMIT_REQUESTS = int(os.getenv("MAS_RATE_LIMIT_REQUESTS", "0"))
+RATE_LIMIT_WINDOW = float(os.getenv("MAS_RATE_LIMIT_WINDOW", "60"))
+ALLOWED_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("MAS_ALLOWED_ORIGINS", "*").split(",")
+    if origin.strip()
+]
+ENABLE_FREE_TRANSLATE = os.getenv("MAS_ENABLE_FREE_TRANSLATE", "1") != "0"
+TORCH_THREADS = int(os.getenv("MAS_TORCH_THREADS", "0"))
+PRELOAD_MODEL = os.getenv("MAS_PRELOAD_MODEL", "1") != "0"
+
+if TORCH_THREADS > 0:
+    # Small VMs benefit from an explicit cap: torch otherwise spawns one
+    # thread per visible core and each OCR call fights the others.
+    import torch
+
+    torch.set_num_threads(TORCH_THREADS)
+
+
+@asynccontextmanager
+async def lifespan(_app):
+    """Load the OCR model before serving.
+
+    Besides making the first request fast, this keeps a few GB resident. That
+    matters on Oracle's Always Free tier, which may reclaim an instance whose
+    memory utilisation stays under 20% for a week.
+    """
+    if PRELOAD_MODEL:
+        try:
+            await run_in_threadpool(get_engine)
+            if os.getenv("MAS_TEXT_DETECTOR", "neural") != "heuristic":
+                await run_in_threadpool(get_detector)
+            logger.info("MangaOCR 模型已预加载并常驻内存")
+        except Exception:
+            logger.exception("OCR 模型预加载失败；请检查依赖、模型缓存与下载网络后重试启动")
+            raise
+    yield
+
+
+app = FastAPI(title="MangaOCR Backend", lifespan=lifespan)
+app.include_router(speech_router)
+app.include_router(document_router)
+
+_ocr_slots = asyncio.Semaphore(OCR_CONCURRENCY)
+_ocr_busy = 0
+_rate_hits: dict[str, deque] = defaultdict(deque)
+_rate_lock = asyncio.Lock()
+
+
+# There used to be a `_has_readable_text` gate here (>= 4 alphanumerics). It was
+# removed rather than reordered: it and is_confident_reading disagree about short
+# readings, and is_confident_reading is the one with the measured reasoning
+# behind it. Keeping the old helper around invited someone to wire it back in.
+
+
+def _check_endpoint_allowed(endpoint: str) -> None:
+    """Refuse the endpoints that turn this route into a credential stealer.
+
+    `/api/translate-text` lets the caller name a URL and the server posts to it,
+    which is a relay by design — it has to be, because the whole point of the
+    OpenAI-compatible mode is to reach whatever endpoint the user configured,
+    very often a backend on their own machine.
+
+    What is *not* by design is being used to reach cloud instance metadata. A
+    request to 169.254.169.254 with a controlled body and headers is the standard
+    way to convert an open relay into stolen credentials. Private and loopback
+    addresses stay allowed because local backends are the normal case; only
+    link-local and non-HTTP schemes are refused.
+
+    The address check now also resolves hostnames (in ``net_guard``), and
+    ``openai_compatible`` re-validates every redirect hop — urllib follows 3xx by
+    default, so without that a friendly-looking endpoint could bounce the request
+    to a blocked address after passing this check.
+    """
+    try:
+        assert_safe_endpoint(endpoint)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+class TranslationRequest(BaseModel):
+    texts: list[str] = Field(default_factory=list)
+    mode: str = "none"
+    endpoint: str = ""
+    model: str = ""
+    api_key: str = ""
+    source_language: str = "ja"
+    target_language: str = "zh-CN"
+
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+def _client_ip(request) -> str:
+    """Client address, honouring the reverse proxy's X-Forwarded-For."""
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+@app.middleware("http")
+async def limit_requests(request, call_next):
+    # Reject an oversized upload before it is read.
+    #
+    # The per-endpoint check in _read_image only runs after Starlette has parsed
+    # the multipart body, spooling anything over ~1 MB to a temp file first. A
+    # multi-gigabyte POST was therefore absorbed in full and only then answered
+    # with 413. Content-Length is a claim, not a guarantee, so the streaming
+    # check stays as well — this just refuses the obvious case cheaply.
+    declared = request.headers.get("content-length")
+    if declared and declared.isdigit() and int(declared) > MAX_IMAGE_BYTES + 1024 * 1024:
+        return JSONResponse(
+            {"detail": f"请求体过大，不能超过 {MAX_IMAGE_BYTES // (1024 * 1024)} MB。"},
+            status_code=413,
+        )
+
+    if RATE_LIMIT_REQUESTS <= 0 or request.url.path == "/health":
+        return await call_next(request)
+
+    client = _client_ip(request)
+    now = time.monotonic()
+    async with _rate_lock:
+        if len(_rate_hits) > 20000:
+            # Evict only buckets whose window has already expired. Clearing the
+            # whole table — the earlier behaviour — also wiped the counters of
+            # clients being throttled right then, handing each of them a free
+            # burst at exactly the moment the table was under pressure.
+            stale = [
+                ip for ip, hits in _rate_hits.items()
+                if not hits or now - hits[-1] > RATE_LIMIT_WINDOW
+            ]
+            for ip in stale:
+                _rate_hits.pop(ip, None)
+        bucket = _rate_hits[client]
+        while bucket and now - bucket[0] > RATE_LIMIT_WINDOW:
+            bucket.popleft()
+        if len(bucket) >= RATE_LIMIT_REQUESTS:
+            retry_after = max(1, int(RATE_LIMIT_WINDOW - (now - bucket[0])))
+            return JSONResponse(
+                {"detail": f"请求过于频繁，请在 {retry_after} 秒后重试。"},
+                status_code=429,
+                headers={"Retry-After": str(retry_after)},
+            )
+        bucket.append(now)
+    return await call_next(request)
+
+
+class _ocr_slot:
+    """Hold one OCR worker slot and run blocking work in a thread."""
+
+    async def __aenter__(self):
+        global _ocr_busy
+        await _ocr_slots.acquire()
+        _ocr_busy += 1
+        return self
+
+    async def __aexit__(self, *_exc):
+        global _ocr_busy
+        _ocr_busy -= 1
+        _ocr_slots.release()
+        return False
+
+
+@app.get("/health")
+def health():
+    return {
+        "ok": True,
+        "backend": "ready",
+        "ocr": "mangaocr",
+        "busy": _ocr_busy,
+        "concurrency": OCR_CONCURRENCY,
+        "free_translate": ENABLE_FREE_TRANSLATE,
+    }
+
+
+@app.post("/api/translate-text")
+async def translate_text(request: TranslationRequest):
+    items = [str(text).strip() for text in request.texts if str(text).strip()]
+    if not items:
+        raise HTTPException(400, "未提供可翻译文本。")
+
+    try:
+        if request.mode == "none":
+            translated = items
+        elif request.mode == "free-translate":
+            if not ENABLE_FREE_TRANSLATE:
+                raise HTTPException(
+                    400,
+                    "此服务器已禁用 Google 翻译，请在扩展设置里改用 OpenAI-compatible API。",
+                )
+            translated = await run_in_threadpool(
+                translate_texts, items, request.source_language, request.target_language
+            )
+        elif request.mode == "openai-compatible":
+            # Resolution is a blocking DNS lookup, so it belongs off the loop.
+            await run_in_threadpool(_check_endpoint_allowed, request.endpoint)
+            translated = await run_in_threadpool(
+                translate_openai_compatible,
+                items,
+                request.endpoint,
+                request.model,
+                request.api_key,
+            )
+        else:
+            raise HTTPException(400, "不支持的翻译模式。")
+    except RuntimeError as exc:
+        raise HTTPException(503, str(exc)) from exc
+
+    if len(translated) != len(items):
+        translated = translated[: len(items)] + [items[-1]] * max(0, len(items) - len(translated))
+
+    return {
+        "ok": True,
+        "items": [
+            {"text": original, "translated": translated_text}
+            for original, translated_text in zip(items, translated)
+        ],
+    }
+
+
+async def _read_image(upload: UploadFile) -> bytes:
+    data = bytearray()
+    while chunk := await upload.read(1024 * 1024):
+        data.extend(chunk)
+        if len(data) > MAX_IMAGE_BYTES:
+            raise HTTPException(413, "图片过大，不能超过 15 MB。")
+    if not data:
+        raise HTTPException(400, "未提供图片内容。")
+    return bytes(data)
+
+
+@app.post("/api/recognize-image")
+async def recognize_image(
+    image: UploadFile = File(...)
+):
+    raw = await _read_image(image)
+
+    try:
+        img = decode_image(raw)
+        async with _ocr_slot():
+            result = await run_in_threadpool(recognize_detailed, img)
+        return {
+            "ok": True,
+            # The front end lays the translation out with this, so it has to come
+            # from the same decision that drove recognition.
+            "direction": result["direction"],
+            "items": [{"text": text} for text in result["texts"]]
+        }
+    except UnidentifiedImageError as e:
+        raise HTTPException(415, "无法识别图片格式，请上传 PNG、JPEG、WEBP 等有效图片。") from e
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception("本地漫画 OCR 处理失败")
+        raise HTTPException(500, "本地 OCR 服务处理失败，请查看后端日志。") from e
+
+
+def _overlap_over_min(first: dict, second: dict) -> float:
+    """Intersection as a fraction of the smaller box."""
+    left = max(first["left"], second["left"])
+    top = max(first["top"], second["top"])
+    right = min(first["right"], second["right"])
+    bottom = min(first["bottom"], second["bottom"])
+    intersection = max(0, right - left) * max(0, bottom - top)
+    smaller = min(
+        (first["right"] - first["left"]) * (first["bottom"] - first["top"]),
+        (second["right"] - second["left"]) * (second["bottom"] - second["top"]),
+    )
+    return intersection / smaller if smaller else 0.0
+
+
+# Above this overlap, two regions are the same piece of text found twice.
+SAME_TEXT_OVERLAP = 0.3
+
+
+def _dedup_weight(item: dict) -> float:
+    """How strongly a reading competes for its piece of text.
+
+    Confidence decides, except between readings that are nearly as sure as
+    each other: there the fuller crop is the better one. Measured on a spread,
+    one balloon came back twice — 'うちにまして、' at 0.499 from a crop tight
+    on the tail, and 'うらやましくはねェけど、な．．．' at 0.494 from the crop
+    that held the whole balloon — and confidence alone kept the wrong one. A
+    small bonus per character tilts those pairs to the longer reading without
+    letting a long invention (0.3x) beat a sure line (0.9x).
+    """
+    length = sum(1 for character in item["text"] if character.isalnum())
+    return item["confidence"] + min(length, 20) * 0.01
+
+
+def _drop_duplicate_regions(items: list[dict]) -> list[dict]:
+    """Keep one reading per piece of text — the one the model was surest of.
+
+    Tightening the detector's own overlap threshold was measured and rejected: it
+    cost a whole real balloon, because the detector has no way to tell which of
+    two overlapping proposals is the better reading. After recognition we do:
+    on a real page the same balloon came back twice, once as the correct line at
+    0.92 confidence and once as a wrong reading at 0.34. Discarding the weaker
+    reading fixes that without touching the threshold that protects real text.
+    """
+    kept: list[dict] = []
+    for item in sorted(items, key=_dedup_weight, reverse=True):
+        if any(
+            _overlap_over_min(item["bbox"], other["bbox"]) > SAME_TEXT_OVERLAP
+            for other in kept
+        ):
+            logger.info(
+                "丢弃重复区域（置信度 %.3f，已被 %.3f 覆盖）",
+                item["confidence"], max(o["confidence"] for o in kept),
+            )
+            continue
+        kept.append(item)
+    kept.sort(key=lambda entry: (entry["bbox"]["top"], -entry["bbox"]["left"]))
+    return kept
+
+
+def _recognize_page_sync(img) -> list[dict]:
+    """Detect text groups in a full screenshot and OCR each group."""
+    regions = detect_text_regions(img, limit=MAX_TEXT_REGIONS)
+    logger.info("自动页面 OCR 检测到 %d 个区域（上限 %d）", len(regions), MAX_TEXT_REGIONS)
+    items = []
+    mask = getattr(regions, "mask", None)
+    for index, (left, top, right, bottom) in enumerate(regions, start=1):
+        logger.info("自动页面 OCR 进度 %d/%d", index, len(regions))
+        region = img.crop((left, top, right, bottom))
+        detailed = recognize_detailed(region)
+        text = "\n".join(detailed["texts"]).strip()
+        # Tight neural crops keep balloon frames out, but the recognizer can be
+        # sensitive to a two-pixel boundary change, especially around ellipses.
+        # Retry a rejected Japanese reading once with a little more OCR context;
+        # keep the glyph/erasure rectangle and the confidence gates unchanged.
+        has_japanese = any("\u3040" <= c <= "\u30ff" or "\u4e00" <= c <= "\u9fff" for c in text)
+        if mask is not None and has_japanese and not is_confident_reading(text, detailed["confidence"]):
+            retry_box = (max(0,left-2), max(0,top-2), min(img.width,right+2), min(img.height,bottom+2))
+            retry = recognize_detailed(img.crop(retry_box))
+            retry_text = "\n".join(retry["texts"]).strip()
+            if retry["confidence"] > detailed["confidence"] and is_confident_reading(retry_text,retry["confidence"]):
+                detailed, text = retry, retry_text
+        # is_confident_reading decides, not the alphanumeric count.
+        #
+        # The count used to run first and it rejected anything under four
+        # alphanumerics, which made the short-reading rule unreachable for exactly
+        # the readings it was written for: 'え！？', 'ん', 'はい' and 'だめだ' all
+        # fail _has_readable_text but all pass is_confident_reading, which wants
+        # kana plus a high confidence for short answers. Single-word balloons
+        # stayed Japanese while everything around them was translated.
+        if not is_confident_reading(text, detailed["confidence"]):
+            logger.info(
+                "丢弃区域 %s（置信度 %.3f）",
+                f"{left},{top},{right},{bottom}", detailed["confidence"],
+            )
+            continue
+        item = {
+            "text": text,
+            "bbox": {"left": left, "top": top, "right": right, "bottom": bottom},
+            # Reported per region so the extension typesets each one the way
+            # it was actually read.
+            "direction": detailed["direction"],
+            "confidence": round(detailed["confidence"], 3),
+        }
+        if mask is not None:
+            item["erase"] = make_erase_patch(img, (left, top, right, bottom), mask)
+        items.append(item)
+    return _drop_duplicate_regions(items)
+
+
+@app.post("/api/recognize-page")
+async def recognize_page(image: UploadFile = File(...)):
+    """Detect text groups in a full screenshot and OCR each group locally."""
+    raw = await _read_image(image)
+    try:
+        img = decode_image(raw)
+        async with _ocr_slot():
+            items = await run_in_threadpool(_recognize_page_sync, img)
+        return {"ok": True, "items": items}
+    except UnidentifiedImageError as exc:
+        raise HTTPException(415, "无法识别图片格式，请上传 PNG、JPEG、WEBP 等有效图片。") from exc
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.exception("本地漫画页面 OCR 处理失败")
+        raise HTTPException(500, "本地 OCR 服务处理失败，请查看后端日志。") from exc
