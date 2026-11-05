@@ -13,6 +13,7 @@ const { createMediaTools } = require("./media.cjs");
 const { remember, editHistory, historyOf } = require("./history.cjs");
 
 const root = path.resolve(__dirname, "..");
+const appIcon = path.join(__dirname, "assets", "maslingo.ico");
 const origin = "maslingo://app";
 const local = route => origin + "/" + route;
 const routes = {
@@ -42,7 +43,8 @@ async function appProtocol(request) {
     return new Response(capture.image.toPNG(), { headers: { "Content-Type": "image/png", "Cache-Control": "no-store" } });
   const filename = path.resolve(root, "." + pathname);
   if (url.host !== "app" || !filename.startsWith(root + path.sep) ||
-      !/^\/(desktop|extension)\//.test(pathname) || !/\.(html|css|js)$/.test(filename))
+      !/^\/(desktop|extension)\//.test(pathname) ||
+      (!/\.(html|css|js)$/.test(filename) && pathname !== "/desktop/assets/maslingo.svg"))
     return new Response(null, { status: 404 });
   try {
     const response = await net.fetch(pathToFileURL(filename).href);
@@ -67,7 +69,7 @@ async function appProtocol(request) {
 
 function createWindow(options = {}) {
   const result = new BrowserWindow({
-    show: false, autoHideMenuBar: true, ...options,
+    show: false, autoHideMenuBar: true, icon: appIcon, ...options,
     webPreferences: {
       sandbox: true, contextIsolation: true, nodeIntegration: false, backgroundThrottling: false,
       preload: path.join(__dirname, "generated", "trusted.cjs"),

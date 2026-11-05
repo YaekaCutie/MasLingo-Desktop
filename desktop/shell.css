@@ -14,7 +14,7 @@ body { background: #f7f9fc; min-height: 100vh; }
 }
 .app-header nav { app-region: no-drag; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 16px; }
-.mark { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: #fff; background: var(--blue); font-weight: 700; }
+.brand img { flex: none; }
 nav, .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .workspace { margin: auto; width: min(100%, 1150px); padding: 30px 28px; }
 h1 { margin: 0 0 6px; font-size: 29px; }

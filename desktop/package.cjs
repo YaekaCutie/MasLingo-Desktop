@@ -30,6 +30,7 @@ async function build() {
       out: path.join(root, "dist"),
       name: "MasLingo Desktop",
       executableName: "MasLingo Desktop",
+      icon: path.join(__dirname, "assets", "maslingo.ico"),
       platform: "win32",
       arch: "x64",
       electronVersion,
