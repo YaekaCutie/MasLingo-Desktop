@@ -55,7 +55,8 @@
   common.className = "translation-common";
   field(common, "translationProvider", "翻译来源", "select", [], "");
   registry.appendProviderOptions(fields.get("translationProvider").control);
-  field(common, "targetLanguage", "目标语言", "select", languages, "简体中文");
+  field(document.querySelector("[data-target-language-slot]") || common,
+    "targetLanguage", "目标语言", "select", languages, "简体中文");
   field(common, "translationGlossary", "专业术语", "select",
     registry.glossaries.map(item => [item.id, item.label]), "general");
   field(common, "translationStrength", "AI 润色", "select",

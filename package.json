@@ -1,6 +1,6 @@
 {
   "name": "maslingo-desktop",
-  "version": "2.0.0",
+  "version": "2.0.2",
   "description": "Standalone Windows translation for text, screen captures, documents, and audio or video",
   "main": "desktop/main.cjs",
   "scripts": {

@@ -346,7 +346,11 @@ async function start() {
   Menu.setApplicationMenu(null);
   worker = createWindow();
   await worker.loadURL(local("desktop/background.html"));
-  window = createWindow({ width: 1080, height: 760, minWidth: 710, minHeight: 590, title: "MasLingo Desktop" });
+  window = createWindow({
+    width: 1080, height: 760, minWidth: 710, minHeight: 590, title: "MasLingo Desktop",
+    titleBarStyle: "hidden",
+    titleBarOverlay: { color: "#ffffff", symbolColor: "#18212f", height: 66 },
+  });
   window.on("closed", () => app.quit());
   for (const [shortcut, action] of [["Ctrl+Alt+S", () => startCapture(currentLanguage)], ["Ctrl+Alt+T", showClipboard]]) {
     if (!globalShortcut.register(shortcut, action)) hotkeyFailures.push(shortcut);

@@ -1,5 +1,18 @@
 body { background: #f7f9fc; min-height: 100vh; }
-.app-header { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 28px; background: #fff; border-bottom: 1px solid var(--line); }
+.app-header {
+  min-height: 66px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 28px;
+  padding-right: max(28px, calc(100% - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100%) + 16px));
+  background: #fff;
+  border-bottom: 1px solid var(--line);
+  app-region: drag;
+  user-select: none;
+}
+.app-header nav { app-region: no-drag; }
 .brand { display: flex; align-items: center; gap: 10px; font-size: 16px; }
 .mark { display: inline-grid; place-items: center; width: 32px; height: 32px; border-radius: 8px; color: #fff; background: var(--blue); font-weight: 700; }
 nav, .actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
@@ -13,9 +26,16 @@ kbd { margin-left: 4px; color: var(--muted); font: 11px "Segoe UI", sans-serif; 
 .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .panels section { background: white; border: 1px solid var(--line); border-radius: 10px; min-width: 0; overflow: hidden; }
 .panel-header { min-height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 5px 14px; border-bottom: 1px solid var(--line); font-weight: 600; }
-.panel-actions, .language-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
-.language-tools { margin-bottom: 10px; }
-.language-tools select { margin-left: 4px; }
+.panel-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.language-tools {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 10px;
+}
+.language-tools > div { min-width: 0; }
+#swap-languages { display: grid; place-items: center; width: 40px; height: 38px; padding: 0; }
 .panels textarea { display: block; width: 100%; min-height: 150px; height: clamp(155px, calc(100vh - 555px), 520px); border: 0; padding: 15px; resize: vertical; outline-offset: -2px; }
 #output { background: #fbfcff; }
 footer { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
