@@ -27,7 +27,6 @@ async function installBridge(desktop) {
   const endpoints = new Map();
   const requests = new Map();
   const fetches = new Map();
-  const saveListeners = [];
   const settingsPath = path.join(app.getPath("userData"), "settings.json");
   let settings = {};
   let pendingWrite = Promise.resolve();
@@ -42,6 +41,9 @@ async function installBridge(desktop) {
       settings = JSON.parse(result);
     } else settings = data.values || {};
   }
+  if (!settings.translationProvider && !settings.translationMode)
+    settings.translationProvider = "google-free";
+  delete settings.desktopSyncPeers;
 
   function emit(endpoint, event, ...args) {
     if (endpoint && !endpoint.contents.isDestroyed()) {
@@ -68,7 +70,6 @@ async function installBridge(desktop) {
       await fs.promises.rename(settingsPath + ".tmp", settingsPath);
       settings = next;
       broadcast("storage:change", changes, "local");
-      for (const listener of saveListeners) listener();
     });
     pendingWrite = write.catch(() => {});
     return write;
@@ -198,7 +199,6 @@ async function installBridge(desktop) {
     broadcast,
     read: () => settings,
     save,
-    onSave: listener => saveListeners.push(listener),
     watch(contents) {
       const id = contents.id;
       const detach = () => {

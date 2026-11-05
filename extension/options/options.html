@@ -16,16 +16,6 @@
 
     <nav class="settings-nav" aria-label="设置分类"><a href="#reading" aria-current="location">阅读方式</a><a href="#providers">翻译来源</a><a href="#display">识别与显示</a></nav>
     <div class="settings-content">
-    <section id="desktop-sync" hidden>
-      <h2>桌面同步</h2>
-      <p class="hint">在 MasLingo 桌面端的「浏览器伴侣」窗口生成配对码。配对后，两端同步翻译控件，各自保存 API 密钥和自定义接口。</p>
-      <div class="row">
-        <input id="desktop-pair-code" type="text" aria-label="桌面配对码" placeholder="16 位桌面配对码" maxlength="16" autocomplete="off" spellcheck="false">
-        <button type="button" id="desktop-pair">配对</button>
-        <button type="button" id="desktop-disconnect" hidden>解除配对</button>
-      </div>
-      <p class="hint" id="desktop-sync-status" role="status"></p>
-    </section>
     <section id="reading" data-settings-group="reading">
       <h2>漫画自动翻译</h2>
       <div class="row">
@@ -152,7 +142,7 @@
       </div>
     </section>
 
-    <section id="display" data-settings-group="display">
+    <section id="display" data-settings-group="display" data-browser-only>
       <h2>漫画译文显示</h2>
       <div class="field">
         <label for="fontScale">字号 <output id="fontScaleValue">100%</output></label>
@@ -171,7 +161,7 @@
         <input id="backendUrl" type="url" placeholder="http://127.0.0.1:8001">
         <div class="hint" id="backendHint">识别会把漫画画面发送到这个后端；也用于无字幕视频的本地语音识别。</div>
       </div>
-      <label class="checkline" for="debugMode">
+      <label class="checkline" for="debugMode" data-browser-only>
         <input id="debugMode" type="checkbox" checked>
         <span>显示识别到的日文原文</span>
       </label>
@@ -195,6 +185,5 @@
   <script src="../config.js"></script>
   <script src="../translation/providers.js"></script>
   <script src="options.js"></script>
-  <script src="control-sync.js"></script>
 </body>
 </html>

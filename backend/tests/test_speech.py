@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import unittest
 import wave
@@ -64,6 +65,27 @@ class SpeechTests(unittest.TestCase):
             self.assertEqual(model.return_value.transcribe.call_args.kwargs["language"], "ja")
             self.assertEqual(self.post(wav(amplitude=5000), "fr").status_code, 422)
             self.assertEqual(self.post(wav(amplitude=5000), "invalid").status_code, 422)
+
+    def test_file_transcript_stream_has_absolute_timestamps(self):
+        def fake_recognize(samples, language):
+            self.assertEqual(language, "en")
+            return {"segments": [{"start": 0.1, "end": 0.4, "text": "Hello."}], "language": "en"}
+
+        with patch("backend.speech.recognize_samples", side_effect=fake_recognize):
+            response = self.client.post("/api/transcribe-file", data={"language": "en"},
+                                        files={"audio": ("long.wav", wav(31, 5000), "audio/wav")})
+        self.assertEqual(response.status_code, 200)
+        first, second, done = map(json.loads, response.text.splitlines())
+        self.assertEqual(first["segments"][0]["start"], 0.1)
+        self.assertEqual(second["segments"][0]["start"], 30.1)
+        self.assertEqual(second["processed"], 31)
+        self.assertEqual(done, {"done": True})
+
+    def test_invalid_file_does_not_hold_the_speech_slot(self):
+        response = self.client.post("/api/transcribe-file",
+                                    files={"audio": ("invalid.wav", b"not audio", "audio/wav")})
+        self.assertIn("error", json.loads(response.text))
+        self.assertEqual(self.post(wav()).status_code, 200)
 
 
 if __name__ == "__main__":

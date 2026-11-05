@@ -1,4 +1,4 @@
-const { contextBridge, ipcRenderer } = require("electron");
+const { contextBridge, ipcRenderer, webUtils } = require("electron");
 
 function makeTransport(manifest) {
   const token = globalThis.crypto.randomUUID();
@@ -8,6 +8,8 @@ function makeTransport(manifest) {
     manifest,
     id: () => token + ":" + (++counter),
     invoke: (method, args) => ready.then(() => ipcRenderer.invoke("mas:call", token, method, args)),
+    chooseMedia: file => ready.then(() =>
+      ipcRenderer.invoke("mas:call", token, "media:choose", [webUtils.getPathForFile(file)])),
     signal: (method, ...args) => {
       ready.then(() => ipcRenderer.send("mas:signal", token, method, args)).catch(() => {});
     },

@@ -82,7 +82,6 @@ const settingsKeys = [
   "autoConcurrency", "fontScale", "overlayOpacity", "translationStrength",
 ];
 function markDraft(event) {
-  if (event.target.closest?.("#desktop-sync")) return;
   if (event.target.matches?.("input[id], select[id]")) drafts.set(event.target.id, ++editVersion);
 }
 document.addEventListener("input", markDraft, true);
@@ -315,6 +314,11 @@ document.getElementById("test").onclick = async () => {
 
 function describeBackend() {
   const value = backendUrl.value.trim();
+  if (globalThis.masTransport) {
+    backendHint.textContent = value ? `文档和音频会发往 ${value} 处理。`
+      : "便携版自动启动本机引擎，处理文档和音视频；截图和图片文字使用 Windows OCR。";
+    return;
+  }
   backendHint.textContent = value
     ? `漫画画面会发送到 ${value}，只用于 OCR。自动翻译发送图片本身，框选翻译发送截图。`
     : "留空则在识别时尝试本机 http://127.0.0.1:8001。自建后端请参考仓库里的 deploy/。";
@@ -375,12 +379,22 @@ chrome.storage.onChanged.addListener((changes, area) => {
 });
 
 // Keep all fields mounted while switching groups so unsaved edits survive.
-const sectionLinks = [...document.querySelectorAll('.settings-nav a')];
+const desktopOptions = Boolean(globalThis.masTransport);
+const sectionLinks = [...document.querySelectorAll('.settings-nav a')].filter(link => {
+  if (!desktopOptions || link.hash !== "#reading") return true;
+  link.hidden = true;
+  return false;
+});
+if (desktopOptions) {
+  document.querySelector('label[for="backendUrl"]').textContent = "文档与语音引擎地址";
+  document.querySelector("header .sub").textContent = "管理翻译来源、目标语言和桌面识别引擎。";
+  for (const node of document.querySelectorAll("[data-browser-only]")) node.hidden = true;
+}
 function selectSection() {
-  const selected = sectionLinks.some(link => link.hash === location.hash) ? location.hash.slice(1) : 'reading';
+  const selected = sectionLinks.some(link => link.hash === location.hash) ? location.hash.slice(1) : sectionLinks[0].hash.slice(1);
   let first = true;
   for (const section of document.querySelectorAll('[data-settings-group]')) {
-    section.hidden = section.dataset.settingsGroup !== selected;
+    section.hidden = section.dataset.settingsGroup !== selected || (desktopOptions && section.hasAttribute("data-browser-only"));
     section.classList.toggle('group-start', !section.hidden && first);
     if (!section.hidden) first = false;
   }

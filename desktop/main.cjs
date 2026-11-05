@@ -9,7 +9,8 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { promisify } = require("node:util");
 const { installBridge } = require("./bridge.cjs");
-const { startControlSync } = require("./sync.cjs");
+const { createMediaTools } = require("./media.cjs");
+const { remember, editHistory, historyOf } = require("./history.cjs");
 
 const root = path.resolve(__dirname, "..");
 const origin = "maslingo://app";
@@ -17,12 +18,13 @@ const local = route => origin + "/" + route;
 const routes = {
   options: "extension/options/options.html",
   document: "extension/document/document.html",
-  browser: "desktop/browser.html",
+  media: "desktop/media.html",
+  history: "desktop/history.html",
 };
 const tools = new Map();
 const runFile = promisify(execFile);
 let window, worker, bridge, backend, capture, hotkeyFailures = [];
-let controlSync;
+let media;
 let busy = false;
 
 app.setName("MasLingo Desktop");
@@ -88,10 +90,13 @@ function openTool(name, hash = "") {
   if (!Object.hasOwn(routes, name)) throw new Error("未知工具");
   const existing = tools.get(name);
   if (existing) { existing.focus(); return; }
-  const tool = createWindow({ width: name === "browser" ? 660 : 950, height: name === "browser" ? 700 : 780, minWidth: 370, minHeight: 420 });
+  const tool = createWindow({ width: 950, height: 780, minWidth: 430, minHeight: 460 });
   tools.set(name, tool);
   tool.once("ready-to-show", () => tool.show());
-  tool.on("closed", () => tools.delete(name));
+  tool.on("closed", () => {
+    if (name === "media") media.clear();
+    tools.delete(name);
+  });
   tool.loadURL(local(routes[name]) + hash).catch(console.error);
 }
 
@@ -106,10 +111,6 @@ function showClipboard() {
   const text = clipboard.readText().trim();
   if (text) bridge.broadcast("shell:text", text.slice(0, 10000), "已读取剪贴板文本");
   else bridge.broadcast("shell:notice", "剪贴板中没有可翻译的文本");
-}
-
-function companionPath() {
-  return app.isPackaged ? path.join(process.resourcesPath, "browser-companion") : path.join(root, "extension");
 }
 
 function ocrScript() {
@@ -244,12 +245,25 @@ function command(role, method, value) {
       return;
     }
   }
-  if (role === "browser") {
-    if (method === "browser:path") return companionPath();
-    if (method === "browser:folder") return shell.openPath(companionPath());
-    if (method === "browser:sync-status") return controlSync.status();
-    if (method === "browser:pair-code") return controlSync.pairCode();
-    if (method === "browser:revoke-sync") return controlSync.revoke();
+  if (role === "media") {
+    if (method === "media:choose") return media.choose(value);
+    if (method === "media:transcribe") return media.transcribe(value);
+    if (method === "media:cancel") return media.cancel();
+    if (method === "media:document") return openTool("document");
+    if (method === "media:pin") return tools.get("media").setAlwaysOnTop(Boolean(value));
+  }
+  if (role === "history") {
+    if (method === "history:restore") {
+      const item = historyOf(bridge.read()).find(entry => entry.id === value);
+      if (item) {
+        showMain();
+        bridge.broadcast("shell:restore", item);
+      }
+      return;
+    }
+    if (method === "history:copy") return clipboard.writeText(String(value));
+    if (method === "history:favorite") return editHistory(bridge, value, false);
+    if (method === "history:remove") return editHistory(bridge, value, true);
   }
   if (role === "shell") {
     if (method === "shell:tool") return openTool(value);
@@ -259,6 +273,7 @@ function command(role, method, value) {
     if (method === "shell:capture") return startCapture(value);
     if (method === "shell:image") return openImage(value);
     if (method === "shell:copy") return clipboard.writeText(value);
+    if (method === "shell:remember") return remember(bridge, value);
     if (method === "shell:ocr-language") { currentLanguage = value; return; }
   }
   throw new Error("此页面无权执行该操作");
@@ -269,18 +284,21 @@ function startLocalBackend() {
   const source = app.isPackaged ? process.resourcesPath : root;
   const venv = path.join(source, ".venv", "Scripts", "python.exe");
   const bundled = path.join(source, "runtime", "python.exe");
-  const python = process.env.MAS_DESKTOP_PYTHON || [venv, bundled].find(filename => fs.existsSync(filename));
+  const built = path.join(root, "build", "desktop-engine");
+  const python = process.env.MAS_DESKTOP_PYTHON || [bundled, path.join(built, "runtime", "python.exe"), venv]
+    .find(filename => fs.existsSync(filename));
   if (!python || process.env.MAS_DESKTOP_NO_BACKEND === "1") return;
-  const models = path.join(source, "models");
+  const speechModel = path.join(app.isPackaged ? source : built, "models", "speech-base");
   const log = fs.openSync(path.join(app.getPath("userData"), "backend.log"), "a");
   try {
-    backend = spawn(python, ["-m", "uvicorn", "backend.app:app", "--host", "127.0.0.1", "--port", "8001", "--no-access-log"], {
+    backend = spawn(python, ["-m", "uvicorn", "backend.desktop_app:app", "--app-dir", source,
+      "--host", "127.0.0.1", "--port", "8001", "--no-access-log"], {
       cwd: source, windowsHide: true, stdio: ["ignore", log, log],
       env: {
-        ...process.env, PYTHONUNBUFFERED: "1", MAS_TORCH_THREADS: process.env.MAS_TORCH_THREADS || "2",
+        ...process.env, PYTHONUNBUFFERED: "1",
         MAS_ENABLE_SPEECH: process.env.MAS_ENABLE_SPEECH || "1",
-        MAS_OCR_CONCURRENCY: process.env.MAS_OCR_CONCURRENCY || "1",
-        ...(fs.existsSync(models) && !process.env.HF_HOME ? { HF_HOME: models } : {}),
+        MAS_SPEECH_MODEL: process.env.MAS_SPEECH_MODEL || (fs.existsSync(speechModel) ? speechModel : "base"),
+        MAS_SPEECH_CACHE: process.env.MAS_SPEECH_CACHE || path.join(app.getPath("userData"), "models"),
       },
     });
     backend.on("error", error => console.error("本地识别服务启动失败", error.message));
@@ -293,8 +311,22 @@ function startLocalBackend() {
 async function start() {
   const ui = session.defaultSession;
   ui.protocol.handle("maslingo", appProtocol);
-  ui.setPermissionRequestHandler((_contents, permission, respond) => respond(permission === "clipboard-sanitized-write"));
-  ui.setPermissionCheckHandler((_contents, permission) => permission === "clipboard-sanitized-write");
+  const isMedia = contents => contents && contents === tools.get("media")?.webContents;
+  ui.setPermissionRequestHandler((contents, permission, respond, details) => respond(
+    permission === "clipboard-sanitized-write" || (isMedia(contents) &&
+      (permission === "display-capture" || (permission === "media" && details.mediaTypes?.every(type => type === "audio")))),
+  ));
+  ui.setPermissionCheckHandler((contents, permission, _origin, details) =>
+    permission === "clipboard-sanitized-write" || (isMedia(contents) &&
+      (permission === "display-capture" || (permission === "media" && details.mediaType === "audio"))));
+  ui.setDisplayMediaRequestHandler((request, respond) => {
+    const frame = tools.get("media")?.webContents.mainFrame;
+    // Chromium requires a video source for this API. Use the tool's own frame,
+    // and record only the system audio track in the renderer.
+    if (frame && request.frame === frame && request.userGesture && request.audioRequested)
+      respond({ video: frame, audio: "loopback" });
+    else respond(null);
+  });
   bridge = await installBridge({
     origin, command, network: session.fromPartition("maslingo-requests"),
     roleOf(contents, frame) {
@@ -304,9 +336,13 @@ async function start() {
       if (contents === capture?.overlay.webContents) return "capture";
       for (const [role, tool] of tools) if (contents === tool.webContents) return role;
     },
-    canFetch: (role, url) => role === "document" && /^\/api\/document\/(text|export)$/.test(new URL(url).pathname),
+    canFetch: (role, url) => {
+      const endpoint = new URL(url).pathname;
+      return (role === "document" && /\/api\/document\/(text|export)$/.test(endpoint)) ||
+        (role === "media" && endpoint.endsWith("/api/transcribe-audio"));
+    },
   });
-  controlSync = startControlSync(bridge);
+  media = createMediaTools(bridge);
   Menu.setApplicationMenu(null);
   worker = createWindow();
   await worker.loadURL(local("desktop/background.html"));
@@ -324,7 +360,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on("second-instance", () => { if (window && !window.isDestroyed()) showMain(); });
   app.on("before-quit", () => {
-    controlSync?.close();
+    media?.cancel();
     globalShortcut.unregisterAll();
     backend?.kill();
   });

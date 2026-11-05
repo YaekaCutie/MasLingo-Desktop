@@ -1,11 +1,10 @@
 {
   "manifest_version": 3,
   "name": "MasLingo",
-  "version": "1.1.9",
+  "version": "1.1.10",
   "description": "网页、漫画与视频翻译：双语阅读、划词词典和独立翻译窗口。",
   "permissions": [
     "activeTab",
-    "alarms",
     "scripting",
     "storage",
     "tabs",
@@ -14,7 +13,6 @@
   "host_permissions": [
     "<all_urls>",
     "http://127.0.0.1:8001/*",
-    "http://127.0.0.1:41763/*",
     "http://localhost:8001/*",
     "http://127.0.0.1:11434/*",
     "https://translate.googleapis.com/*",

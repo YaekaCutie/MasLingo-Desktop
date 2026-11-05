@@ -17,8 +17,9 @@
   <header class="app-header">
     <div class="brand"><span class="mark" aria-hidden="true">译</span><strong>MasLingo</strong></div>
     <nav aria-label="应用工具">
-      <button type="button" data-tool="browser">浏览器伴侣</button>
       <button type="button" data-tool="document">文档翻译</button>
+      <button type="button" data-tool="media">音视频翻译</button>
+      <button type="button" data-tool="history">历史与收藏</button>
       <button type="button" data-tool="options">设置</button>
     </nav>
   </header>
@@ -31,23 +32,34 @@
       <button id="image" type="button">打开图片</button>
       <label class="ocr-language">识别语言 <select id="ocr-language"><option value="auto">Windows 默认</option></select></label>
     </div>
-    <section class="translation-controls" data-translation-controls aria-label="翻译控件"></section>
+    <section class="translation-controls" data-translation-controls data-basic-only aria-label="翻译控件"></section>
     <form id="translation-form">
+      <div class="language-tools">
+        <label>源语言 <select id="source-language"></select></label>
+        <button id="swap-languages" type="button" disabled>互换语言</button>
+      </div>
       <div class="panels">
         <section aria-labelledby="source-label">
-          <div class="panel-header"><label id="source-label" for="source">原文</label><button id="clear" type="button" class="link">清空</button></div>
+          <div class="panel-header"><label id="source-label" for="source">原文</label><div class="panel-actions"><button id="speak-source" type="button" class="link" disabled>朗读</button><button id="clear" type="button" class="link">清空</button></div></div>
           <textarea id="source" maxlength="10000" spellcheck="false" placeholder="输入或粘贴要翻译的文字"></textarea>
         </section>
         <section aria-labelledby="output-label">
-          <div class="panel-header"><label id="output-label" for="output">译文</label><button id="copy" type="button" class="link" disabled>复制</button></div>
+          <div class="panel-header"><label id="output-label" for="output">译文</label><div class="panel-actions"><button id="speak-result" type="button" class="link" disabled>朗读</button><button id="copy" type="button" class="link" disabled>复制</button></div></div>
           <textarea id="output" readonly placeholder="译文将在这里显示"></textarea>
         </section>
       </div>
       <footer>
-        <button id="translate" type="submit" class="primary" disabled>翻译</button>
+        <button id="translate" type="submit" class="primary" title="Ctrl+Enter" disabled>翻译</button>
+        <button id="lookup" type="button" disabled>查词</button>
+        <button id="favorite" type="button" disabled>收藏译文</button>
         <p id="status" role="status"></p>
       </footer>
     </form>
+    <section id="dictionary" hidden aria-labelledby="dictionary-title">
+      <h2 id="dictionary-title">词典</h2>
+      <p class="hint">AI 释义与例句供参考。</p>
+      <div id="dictionary-entry"></div>
+    </section>
     <p id="shortcut-hint" class="hint">全局快捷键在 MasLingo 运行时可用。</p>
   </main>
 </body>

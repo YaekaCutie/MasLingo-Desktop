@@ -13,12 +13,18 @@ kbd { margin-left: 4px; color: var(--muted); font: 11px "Segoe UI", sans-serif; 
 .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
 .panels section { background: white; border: 1px solid var(--line); border-radius: 10px; min-width: 0; overflow: hidden; }
 .panel-header { min-height: 47px; display: flex; align-items: center; justify-content: space-between; padding: 5px 14px; border-bottom: 1px solid var(--line); font-weight: 600; }
-.panels textarea { display: block; width: 100%; min-height: 250px; height: 40vh; max-height: 650px; border: 0; padding: 15px; resize: vertical; outline-offset: -2px; }
+.panel-actions, .language-tools { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.language-tools { margin-bottom: 10px; }
+.language-tools select { margin-left: 4px; }
+.panels textarea { display: block; width: 100%; min-height: 150px; height: clamp(155px, calc(100vh - 555px), 520px); border: 0; padding: 15px; resize: vertical; outline-offset: -2px; }
 #output { background: #fbfcff; }
 footer { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-top: 16px; }
 footer .primary { min-width: 90px; }
 #status { margin: 0 0 0 auto; color: var(--muted); }
 #shortcut-hint { margin: 12px 0 0; }
+#dictionary { margin-top: 16px; padding: 14px; background: #fff; border: 1px solid var(--line); border-radius: 10px; }
+#dictionary h2, #dictionary p { margin: 4px 0; }
+#dictionary li { padding: 5px 0; white-space: pre-wrap; overflow-wrap: anywhere; }
 .instructions { max-width: 650px; margin: auto; padding: 30px; }
 .instructions li { margin-bottom: 10px; }
 .instructions code { display: block; overflow-wrap: anywhere; margin: 8px 0 14px; }

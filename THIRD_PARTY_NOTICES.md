@@ -17,3 +17,7 @@ implemented locally; they do not import upstream Python source files.
 ## Repository context
 
 This notice covers the detector weights described above. See [ARCHITECTURE.md](ARCHITECTURE.md) for how the current automatic OCR pipeline uses the model; the notice and upstream license obligations remain applicable when redistributing the weights.
+
+## Windows desktop runtime
+
+The bundled interpreter is the [CPython embeddable distribution](https://www.python.org/downloads/release/python-31210/). Python package notices are carried in the installed packages. Local speech recognition uses [Faster Whisper](https://github.com/SYSTRAN/faster-whisper) and the optional [Systran conversion of Whisper Base](https://huggingface.co/Systran/faster-whisper-base). See the [Whisper MIT license](third_party/whisper-LICENSE.txt).

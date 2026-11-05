@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MasLingo 历史与收藏</title>
+  <link rel="stylesheet" href="../extension/ui/system.css">
+  <link rel="stylesheet" href="tools.css">
+  <script defer src="client.js"></script>
+  <script defer src="trusted.js"></script>
+  <script defer src="history.js"></script>
+</head>
+<body>
+  <main class="tool">
+    <header><h1>历史与收藏</h1><p>查找、复制或继续编辑本机保存的翻译。</p></header>
+    <section class="tool-panel">
+      <div class="tool-actions">
+        <input id="history-search" type="search" aria-label="搜索原文或译文" placeholder="搜索原文或译文">
+        <label><input id="favorites-only" type="checkbox"> 仅收藏</label>
+        <label><input id="keep-history" type="checkbox"> 自动保存新译文</label>
+      </div>
+      <p class="hint">记录保存在本机。可随时删除单条记录。</p>
+      <p id="status" role="status"></p>
+      <p id="empty" class="hint">没有符合条件的翻译记录。</p>
+      <ul id="history-list"></ul>
+    </section>
+  </main>
+</body>
+</html>

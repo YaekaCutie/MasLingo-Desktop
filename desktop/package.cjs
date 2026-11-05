@@ -13,17 +13,17 @@ async function build() {
       recursive: true,
       filter: file => !["tests", "__pycache__", ".env"].includes(path.basename(file)),
     });
-    const companion = path.join(stage, "browser-companion");
-    fs.cpSync(path.join(root, "extension"), companion, { recursive: true });
-    const extraResource = [backend, companion, path.join(__dirname, "windows-ocr.ps1"),
+    const extraResource = [backend, path.join(__dirname, "windows-ocr.ps1"),
       path.join(__dirname, "settings-crypto.ps1")];
-    if (process.env.MAS_DESKTOP_ENGINE_DIR) {
-      const engine = path.resolve(process.env.MAS_DESKTOP_ENGINE_DIR);
+    const defaultEngine = path.join(root, "build", "desktop-engine");
+    if (process.env.MAS_DESKTOP_ENGINE_DIR || fs.existsSync(path.join(defaultEngine, "runtime", "python.exe"))) {
+      const engine = path.resolve(process.env.MAS_DESKTOP_ENGINE_DIR || defaultEngine);
       const runtime = path.join(engine, "runtime");
       const models = path.join(engine, "models");
-      if (!fs.existsSync(path.join(runtime, "python.exe")) || !fs.existsSync(models))
-        throw new Error("MAS_DESKTOP_ENGINE_DIR 必须包含 runtime/python.exe 和 models");
-      extraResource.push(runtime, models);
+      if (!fs.existsSync(path.join(runtime, "python.exe")))
+        throw new Error("MAS_DESKTOP_ENGINE_DIR 必须包含 runtime/python.exe");
+      extraResource.push(runtime);
+      if (fs.existsSync(models)) extraResource.push(models);
     }
     const apps = await packager({
       dir: root,
@@ -36,7 +36,7 @@ async function build() {
       electronZipDir: process.env.MAS_ELECTRON_ZIP_DIR,
       asar: true,
       extraResource,
-      ignore: /^\/(\.git|\.venv|\.hf|backend|dist|test)(\/|$)/,
+      ignore: /^\/(?:\.git|\.venv|\.hf|backend|build|dist|test|extension\/(?:background|content|popup|reader))(?:\/|$)/,
       overwrite: true,
     });
     console.log(apps.join("\n"));

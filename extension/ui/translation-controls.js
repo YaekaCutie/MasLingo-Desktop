@@ -103,7 +103,9 @@
   feedback.className = "hint translation-feedback";
   feedback.setAttribute("role", "status");
   feedback.hidden = true;
-  panel.append(common, providerHint, advanced, feedback);
+  panel.append(common, providerHint);
+  if (!panel.hasAttribute("data-basic-only")) panel.append(advanced);
+  panel.append(feedback);
 
   const keys = new Set([...fields.keys(), ...registry.profileKeys]);
   async function refresh() {

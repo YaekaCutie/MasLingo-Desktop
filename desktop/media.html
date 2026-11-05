@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MasLingo 音视频翻译</title>
+  <link rel="stylesheet" href="../extension/ui/system.css">
+  <link rel="stylesheet" href="tools.css">
+  <script defer src="client.js"></script>
+  <script defer src="trusted.js"></script>
+  <script defer src="../extension/config.js"></script>
+  <script defer src="../extension/translation/providers.js"></script>
+  <script defer src="subtitles.js"></script>
+  <script defer src="media.js"></script>
+</head>
+<body>
+  <main class="tool">
+    <header><h1>音视频翻译</h1><p>转写本地音视频，或将麦克风和系统声音转成实时字幕。</p></header>
+    <section class="tool-panel" aria-label="音源与字幕设置">
+      <div class="tool-actions">
+        <input id="media-file" type="file" accept=".mp3,.wav,.m4a,.aac,.flac,.ogg,.opus,.mp4,.mkv,.webm,.mov,.avi" hidden>
+        <button id="choose" type="button" class="primary">打开音视频</button>
+        <button id="transcribe" type="button" disabled>开始转写</button>
+        <button id="microphone" type="button">麦克风</button>
+        <button id="system-audio" type="button">系统声音</button>
+        <button id="stop" type="button" disabled>停止</button>
+        <label><input id="pin" type="checkbox"> 窗口置顶</label>
+      </div>
+      <p id="file" class="hint">文件上限 160 MB、60 分钟。已有 SRT 或 WebVTT？<button id="document" class="link" type="button">翻译字幕文件</button></p>
+      <div class="tool-fields">
+        <label>源语言 <select id="source-language"></select></label>
+        <label>目标语言 <select id="target-language"></select></label>
+        <label>字幕显示 <select id="display"><option value="bilingual">双语对照</option><option value="translated">纯译文</option><option value="source">纯原文</option></select></label>
+      </div>
+      <label class="checkline"><input id="auto-translate" type="checkbox" checked> 自动翻译识别结果</label>
+      <p class="hint">音频或文件发往设置中的识别引擎，转写文本发给所选翻译来源。实时字幕仅处理声音。</p>
+      <p id="status" role="status" aria-live="polite">请选择音源。</p>
+    </section>
+    <section class="tool-panel" aria-labelledby="caption-title">
+      <div class="section-header">
+        <h2 id="caption-title">字幕与转写</h2>
+        <div class="tool-actions">
+          <button id="translate" type="button" disabled>翻译现有字幕</button>
+          <button data-export="srt" type="button" disabled>导出 SRT</button>
+          <button data-export="vtt" type="button" disabled>导出 WebVTT</button>
+          <button data-export="txt" type="button" disabled>导出文本</button>
+        </div>
+      </div>
+      <p id="empty" class="hint">识别到的字幕会显示在这里。</p>
+      <ol id="cues" class="cue-list"></ol>
+      <button id="more" type="button" hidden>显示更多</button>
+    </section>
+  </main>
+</body>
+</html>
