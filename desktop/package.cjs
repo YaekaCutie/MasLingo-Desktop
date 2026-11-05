@@ -15,7 +15,8 @@ async function build() {
     });
     const companion = path.join(stage, "browser-companion");
     fs.cpSync(path.join(root, "extension"), companion, { recursive: true });
-    const extraResource = [backend, companion, path.join(__dirname, "windows-ocr.ps1")];
+    const extraResource = [backend, companion, path.join(__dirname, "windows-ocr.ps1"),
+      path.join(__dirname, "settings-crypto.ps1")];
     if (process.env.MAS_DESKTOP_ENGINE_DIR) {
       const engine = path.resolve(process.env.MAS_DESKTOP_ENGINE_DIR);
       const runtime = path.join(engine, "runtime");

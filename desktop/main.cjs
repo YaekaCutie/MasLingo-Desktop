@@ -9,6 +9,7 @@ const path = require("node:path");
 const { pathToFileURL } = require("node:url");
 const { promisify } = require("node:util");
 const { installBridge } = require("./bridge.cjs");
+const { startControlSync } = require("./sync.cjs");
 
 const root = path.resolve(__dirname, "..");
 const origin = "maslingo://app";
@@ -21,6 +22,7 @@ const routes = {
 const tools = new Map();
 const runFile = promisify(execFile);
 let window, worker, bridge, backend, capture, hotkeyFailures = [];
+let controlSync;
 let busy = false;
 
 app.setName("MasLingo Desktop");
@@ -86,7 +88,7 @@ function openTool(name, hash = "") {
   if (!Object.hasOwn(routes, name)) throw new Error("未知工具");
   const existing = tools.get(name);
   if (existing) { existing.focus(); return; }
-  const tool = createWindow({ width: name === "browser" ? 660 : 950, height: name === "browser" ? 560 : 780, minWidth: 370, minHeight: 420 });
+  const tool = createWindow({ width: name === "browser" ? 660 : 950, height: name === "browser" ? 700 : 780, minWidth: 370, minHeight: 420 });
   tools.set(name, tool);
   tool.once("ready-to-show", () => tool.show());
   tool.on("closed", () => tools.delete(name));
@@ -245,6 +247,9 @@ function command(role, method, value) {
   if (role === "browser") {
     if (method === "browser:path") return companionPath();
     if (method === "browser:folder") return shell.openPath(companionPath());
+    if (method === "browser:sync-status") return controlSync.status();
+    if (method === "browser:pair-code") return controlSync.pairCode();
+    if (method === "browser:revoke-sync") return controlSync.revoke();
   }
   if (role === "shell") {
     if (method === "shell:tool") return openTool(value);
@@ -290,7 +295,7 @@ async function start() {
   ui.protocol.handle("maslingo", appProtocol);
   ui.setPermissionRequestHandler((_contents, permission, respond) => respond(permission === "clipboard-sanitized-write"));
   ui.setPermissionCheckHandler((_contents, permission) => permission === "clipboard-sanitized-write");
-  bridge = installBridge({
+  bridge = await installBridge({
     origin, command, network: session.fromPartition("maslingo-requests"),
     roleOf(contents, frame) {
       if (!frame || frame !== contents.mainFrame || !frame.url.startsWith(origin + "/")) return;
@@ -301,6 +306,7 @@ async function start() {
     },
     canFetch: (role, url) => role === "document" && /^\/api\/document\/(text|export)$/.test(new URL(url).pathname),
   });
+  controlSync = startControlSync(bridge);
   Menu.setApplicationMenu(null);
   worker = createWindow();
   await worker.loadURL(local("desktop/background.html"));
@@ -318,6 +324,7 @@ if (!app.requestSingleInstanceLock()) app.quit();
 else {
   app.on("second-instance", () => { if (window && !window.isDestroyed()) showMain(); });
   app.on("before-quit", () => {
+    controlSync?.close();
     globalShortcut.unregisterAll();
     backend?.kill();
   });

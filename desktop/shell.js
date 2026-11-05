@@ -4,7 +4,6 @@ const source = $("source");
 const output = $("output");
 const status = $("status");
 const language = $("ocr-language");
-const registry = globalThis.MAS_providers;
 let revision = 0;
 let translating = false;
 
@@ -15,12 +14,6 @@ function report(error) {
 function controls() {
   $("translate").disabled = translating || !source.value.trim();
   $("copy").disabled = !output.value;
-}
-
-async function refreshProvider() {
-  const cfg = await chrome.storage.local.get([...registry.profileKeys, "targetLanguage"]);
-  const provider = registry.byId(registry.resolveProviderId(cfg));
-  $("provider").textContent = `${provider?.label || "请选择翻译来源"} · ${cfg.targetLanguage || "简体中文"}`;
 }
 
 async function translate() {
@@ -73,6 +66,15 @@ source.addEventListener("input", () => {
   status.textContent = "";
   controls();
 });
+const translationSettings = new Set([...globalThis.MAS_providers.profileKeys, "targetLanguage",
+  "translationGlossary", "translationStrength", "backendUrl"]);
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local" || !translating || !Object.keys(changes).some(key => translationSettings.has(key))) return;
+  revision++;
+  translating = false;
+  status.textContent = "翻译设置已更新，请重新翻译。";
+  controls();
+});
 language.onchange = async () => {
   try {
     await invoke("ocr-language", language.value);
@@ -88,8 +90,6 @@ masTransport.subscribe((event, text, label) => {
     translate();
   }
 });
-chrome.storage.onChanged.addListener(() => refreshProvider().catch(report));
-refreshProvider().catch(report);
 Promise.all([invoke("languages"), chrome.storage.local.get("desktopOcrLanguage")]).then(([languages, config]) => {
   for (const item of languages) language.append(new Option(item.name, item.tag));
   if ([...language.options].some(option => option.value === config.desktopOcrLanguage))

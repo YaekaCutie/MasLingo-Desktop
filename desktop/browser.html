@@ -17,5 +17,15 @@
   <code id="path"></code>
   <button id="folder" type="button" class="primary">打开伴侣文件夹</button>
   <p id="status" role="status"></p>
+  <section aria-labelledby="sync-title">
+    <h2 id="sync-title">同步翻译控件</h2>
+    <p>生成配对码后，填入浏览器伴侣设置页的「桌面同步」。已保存的桌面设置优先，配对后两端可双向修改。</p>
+    <div class="actions">
+      <button id="pair-code" type="button">生成配对码</button>
+      <button id="revoke-sync" type="button" hidden>解除所有配对</button>
+    </div>
+    <output id="sync-code" aria-live="polite"></output>
+    <p id="sync-status" role="status"></p>
+  </section>
 </main>
 </html>

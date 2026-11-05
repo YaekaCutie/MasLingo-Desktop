@@ -1,0 +1,87 @@
+.translation-controls {
+  margin: 0 0 16px;
+  padding: 14px;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  background: #fff;
+}
+.translation-common,
+.translation-groups {
+  display: grid;
+  gap: 12px;
+}
+.translation-common {
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 175px), 1fr));
+}
+.translation-groups {
+  margin-top: 12px;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 220px), 1fr));
+}
+.translation-field {
+  display: grid;
+  gap: 4px 8px;
+  min-width: 0;
+  color: var(--ink);
+  font-size: 13px;
+}
+.translation-field select { width: 100%; }
+.translation-field input { accent-color: var(--blue); }
+.translation-check {
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  min-height: 28px;
+}
+.translation-check input {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+.translation-field:has(input[type="range"]) {
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+}
+.translation-field input[type="range"] {
+  grid-column: 1/-1;
+  grid-row: 2;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+}
+.translation-field output {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.translation-advanced {
+  border-top: 1px solid var(--line);
+  margin-top: 10px;
+  padding-top: 10px;
+}
+.translation-advanced summary {
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink);
+}
+.translation-groups fieldset {
+  min-width: 0;
+  margin: 0;
+  padding: 6px 10px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  display: grid;
+  align-content: start;
+  gap: 7px;
+}
+.translation-groups legend {
+  padding: 0 5px;
+  font-weight: 600;
+}
+.translation-provider-hint {
+  margin: 5px 0 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.translation-provider-hint button { margin-left: auto; }
+.translation-feedback { margin: 8px 0 0; color: #a12129; }

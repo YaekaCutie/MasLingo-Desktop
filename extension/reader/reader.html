@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width,initial-scale=1" />
     <title>MasLingo 翻译窗口</title>
     <link rel="stylesheet" href="../ui/system.css" />
+    <link rel="stylesheet" href="../ui/translation-controls.css" />
     <link rel="stylesheet" href="reader.css" />
   </head>
   <body>
@@ -91,16 +92,8 @@
       </section>
       <section id="setup-view" hidden>
         <h2>翻译偏好</h2>
-        <label class="field"
-          >翻译来源<select id="translationProvider"></select></label
-        ><label class="field"
-          >目标语言<select id="targetLanguage"></select></label
-        ><label class="field"
-          >术语库<select id="translationGlossary"></select
-        ></label>
-        <p class="hint">偏好即时保存。模型、密钥和识别服务在完整设置中管理。</p>
-        <button id="settings" class="primary wide">打开完整设置</button
-        ><button id="health" class="wide">检查识别服务</button>
+        <div class="translation-controls" data-translation-controls aria-label="翻译控件"></div>
+        <button id="health" class="wide">检查识别服务</button>
       </section>
     </main>
     <footer>
@@ -109,6 +102,7 @@
     </footer>
     <script src="../config.js"></script>
     <script src="../translation/providers.js"></script>
+    <script src="../ui/translation-controls.js"></script>
     <script src="reader.js"></script>
   </body>
 </html>

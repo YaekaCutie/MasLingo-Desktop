@@ -202,7 +202,6 @@
       ...controls,
       "webDisplayMode",
       "targetLanguage",
-      "translationGlossary",
     ]);
     if (id !== settingsVersion) return;
     for (const key of controls)
@@ -212,17 +211,6 @@
       cfg.webDisplayMode,
     );
     const provider = registry.byId(registry.resolveProviderId(cfg));
-    $("translationProvider").value = provider?.id || "none";
-    const target = cfg.targetLanguage || "简体中文";
-    const language = $("targetLanguage");
-    language.querySelector("[data-custom]")?.remove();
-    if (![...language.options].some((option) => option.value === target)) {
-      const custom = new Option(target, target);
-      custom.dataset.custom = "1";
-      language.append(custom);
-    }
-    language.value = target;
-    $("translationGlossary").value = cfg.translationGlossary || "general";
     const ai = registry.isChatProvider(provider);
     $("selectionTranslate").disabled = !ai;
     $("selectionTranslate").checked = ai && cfg.selectionTranslate !== false;
@@ -232,7 +220,6 @@
     $("inputAutoReplace").disabled = !ai || cfg.selectionTranslate === false;
     $("inputAutoReplace").checked = !$("inputAutoReplace").disabled && cfg.inputAutoReplace !== false;
     $("inputAutoReplace").title = "开启 AI 划词词典后，可翻译并替换输入框里选中的文字";
-    $("translationGlossary").disabled = !ai;
     $("provider-label").textContent =
       `${provider?.label || "请选择翻译来源"} · ${cfg.targetLanguage || "简体中文"}`;
     const issue = registry.configurationIssue(provider, registry.providerSettings(cfg, provider?.id));
@@ -240,23 +227,14 @@
       ? `${issue}，可在完整设置中配置。`
       : "悬停和划词结果显示在此窗口。";
   }
-  registry.appendProviderOptions($("translationProvider"));
-  for (const l of registry.languages)
-    $("targetLanguage").append(new Option(l.name, l.name));
-  for (const g of registry.glossaries)
-    $("translationGlossary").append(new Option(g.label, g.id));
   for (const key of [
     ...controls,
     "webDisplayMode",
-    "translationProvider",
-    "targetLanguage",
-    "translationGlossary",
   ])
     $(key).addEventListener("change", async () => {
       try {
         const value = controls.includes(key) ? $(key).checked : $(key).value;
-        if (key === "translationProvider") await registry.saveProvider(value);
-        else await chrome.storage.local.set({ [key]: value });
+        await chrome.storage.local.set({ [key]: value });
         report("偏好已保存");
       } catch {
         report("保存失败，请重试");
@@ -269,7 +247,6 @@
         $(key + "-view").hidden = key !== name;
       }
     };
-  $("settings").onclick = () => chrome.runtime.openOptionsPage();
   $("select").onclick = async () => {
     try {
       await chrome.tabs.sendMessage(

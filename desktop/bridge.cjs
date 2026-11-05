@@ -1,24 +1,46 @@
 const { app, dialog, ipcMain, safeStorage } = require("electron");
+const { execFile } = require("node:child_process");
 const fs = require("node:fs");
 const path = require("node:path");
+const { isDeepStrictEqual } = require("node:util");
 const { franc } = require("franc-min");
 const { iso6393To1 } = require("iso-639-3");
 const { host_permissions: hosts } = require("../extension/manifest.json");
+require("../extension/translation/providers.js");
+const providers = globalThis.MAS_providers;
 
-function installBridge(desktop) {
+function settingsCrypto(mode, contents) {
+  const script = path.join(app.isPackaged ? process.resourcesPath : __dirname, "settings-crypto.ps1");
+  return new Promise((resolve, reject) => {
+    const child = execFile("powershell.exe", [
+      "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File", script, "-Mode", mode,
+    ], { windowsHide: true, timeout: 15000, maxBuffer: 4 * 1024 * 1024 }, (error, output) => {
+      if (error) reject(new Error(mode === "protect" ? "无法加密桌面设置" : "无法解密桌面设置"));
+      else resolve(output);
+    });
+    child.stdin.on("error", reject);
+    child.stdin.end(contents, "utf8");
+  });
+}
+
+async function installBridge(desktop) {
   const endpoints = new Map();
   const requests = new Map();
   const fetches = new Map();
+  const saveListeners = [];
   const settingsPath = path.join(app.getPath("userData"), "settings.json");
   let settings = {};
+  let pendingWrite = Promise.resolve();
   let serial = 0;
   let workerReady;
   const ready = new Promise(resolve => { workerReady = resolve; });
   if (fs.existsSync(settingsPath)) {
     const data = JSON.parse(fs.readFileSync(settingsPath, "utf8"));
-    settings = data.encrypted
-      ? JSON.parse(safeStorage.decryptString(Buffer.from(data.encrypted, "base64")))
-      : data.values || {};
+    if (data.dpapi) settings = JSON.parse(await settingsCrypto("unprotect", data.dpapi));
+    else if (data.encrypted) {
+      const { result } = await safeStorage.decryptStringAsync(Buffer.from(data.encrypted, "base64"));
+      settings = JSON.parse(result);
+    } else settings = data.values || {};
   }
 
   function emit(endpoint, event, ...args) {
@@ -32,16 +54,24 @@ function installBridge(desktop) {
   }
 
   function save(values) {
-    const changes = Object.fromEntries(Object.entries(values).map(([key, value]) =>
-      [key, { oldValue: settings[key], newValue: value }]));
-    const next = { ...settings, ...values };
-    const data = safeStorage.isEncryptionAvailable()
-      ? { encrypted: safeStorage.encryptString(JSON.stringify(next)).toString("base64") }
-      : { values: next };
-    fs.writeFileSync(settingsPath + ".tmp", JSON.stringify(data), { mode: 0o600 });
-    fs.renameSync(settingsPath + ".tmp", settingsPath);
-    settings = next;
-    broadcast("storage:change", changes, "local");
+    const write = pendingWrite.then(async () => {
+      const patch = typeof values === "function" ? values(settings) : values;
+      const changes = Object.fromEntries(Object.entries(patch).filter(([key, value]) =>
+        !isDeepStrictEqual(settings[key], value)).map(([key, value]) =>
+        [key, { oldValue: settings[key], newValue: value }]));
+      if (!Object.keys(changes).length) return;
+      const next = { ...settings, ...patch };
+      const encrypted = await settingsCrypto("protect", JSON.stringify(next));
+      await fs.promises.writeFile(settingsPath + ".tmp", JSON.stringify({
+        dpapi: encrypted,
+      }), { mode: 0o600 });
+      await fs.promises.rename(settingsPath + ".tmp", settingsPath);
+      settings = next;
+      broadcast("storage:change", changes, "local");
+      for (const listener of saveListeners) listener();
+    });
+    pendingWrite = write.catch(() => {});
+    return write;
   }
 
   function from(event, token) {
@@ -119,6 +149,13 @@ function installBridge(desktop) {
           .filter(key => Object.hasOwn(settings, key)).map(key => [key, settings[key]]));
       }
       case "storage:set": return save(first);
+      case "storage:save-provider":
+        if (!providers.byId(first)) throw new Error("未知翻译来源");
+        return save(current => {
+          if (third && providers.resolveProviderId(current) !== first)
+            throw new Error("翻译来源已在其他窗口变更，请确认来源后再保存。");
+          return providers.providerUpdate(current, first, second);
+        });
       case "app:options": return desktop.command(endpoint.role, "app:options");
       case "permissions:contains":
         return first.every(pattern => hosts.includes(pattern) || settings.desktopAllowedOrigins?.includes(pattern));
@@ -129,7 +166,9 @@ function installBridge(desktop) {
           message: "允许此翻译接口接收待翻译的内容？", detail: first[0].slice(0, -2),
         });
         if (result.response !== 0) return false;
-        save({ desktopAllowedOrigins: [...new Set([...(settings.desktopAllowedOrigins || []), first[0]])] });
+        await save(current => ({
+          desktopAllowedOrigins: [...new Set([...(current.desktopAllowedOrigins || []), first[0]])],
+        }));
         return true;
       }
       case "language:detect": {
@@ -157,6 +196,9 @@ function installBridge(desktop) {
 
   return {
     broadcast,
+    read: () => settings,
+    save,
+    onSave: listener => saveListeners.push(listener),
     watch(contents) {
       const id = contents.id;
       const detach = () => {

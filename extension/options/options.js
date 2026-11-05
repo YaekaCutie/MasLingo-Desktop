@@ -33,6 +33,9 @@ const autoTranslate = document.getElementById("autoTranslate");
 const webAutoTranslate = document.getElementById("webAutoTranslate");
 const webDisplayMode = document.getElementById("webDisplayMode");
 const videoDisplayMode = document.getElementById("videoDisplayMode");
+const videoSourceLanguage = document.getElementById("videoSourceLanguage");
+const videoTargetLanguage = document.getElementById("videoTargetLanguage");
+const videoAutoPrepare = document.getElementById("videoAutoPrepare");
 const hoverTranslate = document.getElementById("hoverTranslate");
 const selectionTranslate = document.getElementById("selectionTranslate");
 const inputAutoReplace = document.getElementById("inputAutoReplace");
@@ -74,10 +77,12 @@ const settingsKeys = [
   "translationEndpoint", "translationModel", "translationAppId",
   "translationModelProvider", "translationApiKey", "targetLanguage",
   "translationGlossary", "autoTranslate", "webAutoTranslate", "webDisplayMode",
-  "videoDisplayMode", "hoverTranslate", "selectionTranslate", "inputAutoReplace",
+  "videoDisplayMode", "videoSourceLanguage", "videoTargetLanguage", "videoAutoPrepare",
+  "hoverTranslate", "selectionTranslate", "inputAutoReplace",
   "autoConcurrency", "fontScale", "overlayOpacity", "translationStrength",
 ];
 function markDraft(event) {
+  if (event.target.closest?.("#desktop-sync")) return;
   if (event.target.matches?.("input[id], select[id]")) drafts.set(event.target.id, ++editVersion);
 }
 document.addEventListener("input", markDraft, true);
@@ -237,6 +242,9 @@ document.getElementById("save").onclick = async () => {
     webAutoTranslate: webAutoTranslate.checked,
     webDisplayMode: globalThis.MAS_webDisplayMode(webDisplayMode.value),
     videoDisplayMode: globalThis.MAS_webDisplayMode(videoDisplayMode.value),
+    videoSourceLanguage: videoSourceLanguage.value,
+    videoTargetLanguage: videoTargetLanguage.value,
+    videoAutoPrepare: videoAutoPrepare.checked,
     hoverTranslate: hoverTranslate.checked,
     selectionTranslate: selectionPreference,
     inputAutoReplace: inputReplacePreference,
@@ -328,6 +336,9 @@ async function load() {
   set(webAutoTranslate, Boolean(cfg.webAutoTranslate));
   set(webDisplayMode, globalThis.MAS_webDisplayMode(cfg.webDisplayMode));
   set(videoDisplayMode, globalThis.MAS_webDisplayMode(cfg.videoDisplayMode));
+  set(videoSourceLanguage, cfg.videoSourceLanguage || registry.autoSource);
+  set(videoTargetLanguage, cfg.videoTargetLanguage || "");
+  set(videoAutoPrepare, cfg.videoAutoPrepare !== false);
   set(hoverTranslate, Boolean(cfg.hoverTranslate));
   if (!drafts.has("selectionTranslate")) selectionPreference = cfg.selectionTranslate !== false;
   if (!drafts.has("inputAutoReplace")) inputReplacePreference = cfg.inputAutoReplace !== false;
@@ -350,6 +361,12 @@ async function load() {
 backendUrl.addEventListener("input", describeBackend);
 
 registry.appendProviderOptions(providerSelect);
+videoSourceLanguage.append(new Option(registry.autoSource, registry.autoSource));
+videoTargetLanguage.append(new Option("跟随翻译目标语言", ""));
+for (const language of registry.languages) {
+  videoSourceLanguage.append(new Option(language.name, language.name));
+  videoTargetLanguage.append(new Option(language.name, language.name));
+}
 for (const language of registry.languages) document.getElementById("targetLanguages").append(new Option(language.name));
 buildGlossaryOptions();
 load();

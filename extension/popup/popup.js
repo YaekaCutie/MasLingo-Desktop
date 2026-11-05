@@ -333,6 +333,15 @@ document.getElementById("autoPage").onclick = async () => {
 
 // --- boot -------------------------------------------------------------------
 
+chrome.storage.onChanged.addListener((changes, area) => {
+  if (area !== "local") return;
+  if (changes.autoTranslate) autoToggle.checked = Boolean(changes.autoTranslate.newValue);
+  for (const key of ["webAutoTranslate", "hoverTranslate"]) {
+    if (changes[key]) document.getElementById(key).checked = Boolean(changes[key].newValue);
+  }
+  if (changes.debugMode) showsSourceText = changes.debugMode.newValue !== false;
+});
+
 (async () => {
   const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
   activeTabId = tab?.id ?? null;

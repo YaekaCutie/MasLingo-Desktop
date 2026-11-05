@@ -1328,26 +1328,32 @@
   }
 
   function saveProvider(id, changes = {}, { onlyIfCurrent = false } = {}) {
+    if (globalThis.masTransport)
+      return globalThis.masTransport.invoke("storage:save-provider", [id, changes, onlyIfCurrent]);
     return navigator.locks.request("maslingo-translation-provider", async () => {
       const cfg = await chrome.storage.local.get([...profileKeys, profileKey(id)]);
       if (onlyIfCurrent && resolveProviderId(cfg) !== id) {
         throw new Error("翻译来源已在其他窗口变更，请确认来源后再保存。");
       }
-      const owner = profileOwner(cfg);
-      const settings = providerSettings(cfg, id);
-      for (const key of profileFields) {
-        if (key in changes) settings[key] = changes[key];
-      }
-      await chrome.storage.local.set({
-        ...(owner !== id && byId(owner)?.adapter ? { [profileKey(owner)]: providerSettings(cfg, owner) } : {}),
-        [profileKey(id)]: null,
-        ...changes, ...settings,
-        translationProvider: id,
-        translationModelProvider: id,
-        translationMode: id === "none" ? "none" : ["google-free", "backend"].includes(id)
-          ? "free-translate" : "openai-compatible",
-      });
+      await chrome.storage.local.set(providerUpdate(cfg, id, changes));
     });
+  }
+
+  function providerUpdate(cfg, id, changes) {
+    const owner = profileOwner(cfg);
+    const settings = providerSettings(cfg, id);
+    for (const key of profileFields) {
+      if (key in changes) settings[key] = changes[key];
+    }
+    return {
+      ...(owner !== id && byId(owner)?.adapter ? { [profileKey(owner)]: providerSettings(cfg, owner) } : {}),
+      [profileKey(id)]: null,
+      ...changes, ...settings,
+      translationProvider: id,
+      translationModelProvider: id,
+      translationMode: id === "none" ? "none" : ["google-free", "backend"].includes(id)
+        ? "free-translate" : "openai-compatible",
+    };
   }
 
   function configurationIssue(provider, settings) {
@@ -1540,6 +1546,7 @@
     profileKey,
     providerSettings,
     saveProvider,
+    providerUpdate,
     configurationIssue,
     appendProviderOptions,
     resolveProviderId,

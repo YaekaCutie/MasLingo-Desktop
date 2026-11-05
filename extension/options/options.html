@@ -16,6 +16,16 @@
 
     <nav class="settings-nav" aria-label="设置分类"><a href="#reading" aria-current="location">阅读方式</a><a href="#providers">翻译来源</a><a href="#display">识别与显示</a></nav>
     <div class="settings-content">
+    <section id="desktop-sync" hidden>
+      <h2>桌面同步</h2>
+      <p class="hint">在 MasLingo 桌面端的「浏览器伴侣」窗口生成配对码。配对后，两端同步翻译控件，各自保存 API 密钥和自定义接口。</p>
+      <div class="row">
+        <input id="desktop-pair-code" type="text" aria-label="桌面配对码" placeholder="16 位桌面配对码" maxlength="16" autocomplete="off" spellcheck="false">
+        <button type="button" id="desktop-pair">配对</button>
+        <button type="button" id="desktop-disconnect" hidden>解除配对</button>
+      </div>
+      <p class="hint" id="desktop-sync-status" role="status"></p>
+    </section>
     <section id="reading" data-settings-group="reading">
       <h2>漫画自动翻译</h2>
       <div class="row">
@@ -46,6 +56,18 @@
       <div class="row">
         <div class="row-text"><label class="label" for="videoDisplayMode">视频字幕显示</label><div class="hint">在视频下方开启字幕翻译，控制条不遮挡画面。无字幕识别需共享当前标签页声音，并在后端启用语音模型；音频仅发送给设置中的后端。</div></div>
         <select id="videoDisplayMode"><option value="bilingual">双语对照</option><option value="translated">纯译文</option><option value="source">纯原文</option></select>
+      </div>
+      <div class="row">
+        <label class="label" for="videoSourceLanguage">字幕源语言</label>
+        <select id="videoSourceLanguage"></select>
+      </div>
+      <div class="row">
+        <label class="label" for="videoTargetLanguage">字幕目标语言</label>
+        <select id="videoTargetLanguage"></select>
+      </div>
+      <div class="row">
+        <label class="label" for="videoAutoPrepare">自动预翻译字幕</label>
+        <label class="switch"><input id="videoAutoPrepare" type="checkbox"><span class="switch-track"><span class="switch-thumb"></span></span></label>
       </div>
       <div class="row">
         <div class="row-text"><label class="label" for="webAutoTranslate">网页自动翻译</label><div class="hint">按阅读位置分批翻译正文、标题、图注、列表和表格。保留原文中的链接、引用和公式，关闭后移除译文。</div></div>
@@ -173,5 +195,6 @@
   <script src="../config.js"></script>
   <script src="../translation/providers.js"></script>
   <script src="options.js"></script>
+  <script src="control-sync.js"></script>
 </body>
 </html>

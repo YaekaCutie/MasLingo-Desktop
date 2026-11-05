@@ -5,10 +5,12 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>MasLingo Desktop</title>
   <link rel="stylesheet" href="../extension/ui/system.css">
+  <link rel="stylesheet" href="../extension/ui/translation-controls.css">
   <link rel="stylesheet" href="shell.css">
   <script defer src="client.js"></script>
   <script defer src="trusted.js"></script>
   <script defer src="../extension/translation/providers.js"></script>
+  <script defer src="../extension/ui/translation-controls.js"></script>
   <script defer src="shell.js"></script>
 </head>
 <body>
@@ -29,6 +31,7 @@
       <button id="image" type="button">打开图片</button>
       <label class="ocr-language">识别语言 <select id="ocr-language"><option value="auto">Windows 默认</option></select></label>
     </div>
+    <section class="translation-controls" data-translation-controls aria-label="翻译控件"></section>
     <form id="translation-form">
       <div class="panels">
         <section aria-labelledby="source-label">
@@ -42,7 +45,6 @@
       </div>
       <footer>
         <button id="translate" type="submit" class="primary" disabled>翻译</button>
-        <span id="provider" class="hint"></span>
         <p id="status" role="status"></p>
       </footer>
     </form>
